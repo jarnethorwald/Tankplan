@@ -195,15 +195,16 @@
 
   function daySessions(model, d) {
     var acts = model.acts.filter(function (a) { return a.day === d; }).map(function (a) {
-      return { src: 'act', type: a.type, min: a.min, lv: a.lv, kcal: a.kcal, net: a.net, title: a.name || a.type, tm: a.tm };
+      return { src: 'act', id: a.id, man: /^man_/.test(a.id), type: a.type, min: a.min, lv: a.lv, kcal: a.kcal, net: a.net, title: a.name || a.type, tm: a.tm };
     });
     var used = {};
     var out = acts.slice();
+    out.dropped = [];
     model.plan.filter(function (x) { return x.day === d; }).forEach(function (p) {
       var i = -1;
       for (var k = 0; k < acts.length; k++) if (!used[k] && acts[k].type === p.type) { i = k; break; }
       if (i >= 0) { used[i] = true; return; }
-      if (d < model.today) return;
+      if (d < model.today) { out.dropped.push(p); return; }
       var plannedIntensity = p.tss ? intensityFromTss(p.tss, p.min) : null;
       out.push({ src: 'plan', type: p.type, min: p.min, lv: plannedIntensity ? plannedIntensity.lv : p.lv, tss: p.tss, kj: p.kj, desc: p.descr, title: p.title, id: p.id, tm: p.tm });
     });
@@ -276,7 +277,9 @@
     var kj = kjMatch ? Number((kjMatch[1] || kjMatch[2]).replace(',', '.')) : null;
     var day = defDay, m;
     var base = nowDay || today();
-    if (/uebermorgen/.test(low)) day = addDays(base, 2);
+    if (/vorgestern/.test(low)) day = addDays(base, -2);
+    else if (/\bgestern\b/.test(low)) day = addDays(base, -1);
+    else if (/uebermorgen/.test(low)) day = addDays(base, 2);
     else if (/\bmorgen\b/.test(low)) day = addDays(base, 1);
     else if (/\bheute\b/.test(low)) day = base;
     else if ((m = low.match(/(\d{1,2})\.(\d{1,2})\.?(\d{2,4})?/))) {
@@ -330,7 +333,7 @@
     if (/30\/30|\d+\s*x\s*\d|interval|vo2|schwelle|threshold|\bz[45]\b|\bhit\b|wettkampf|rennen|race|\btest\b|anaerob|sprint|\bftp\b|over.?under/.test(low)) lv = 2;
     else if (/locker|grundlage|\bga ?1\b|\bz[12]\b|regeneration|recovery|easy|spazier|aktive erholung/.test(low)) lv = 0;
     if (tss > 0) lv = intensityFromTss(tss, min).lv;
-    var title = raw.replace(/\b(heute|morgen|übermorgen|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b[,:]?\s*/ig, '').replace(/^(mo|di|mi|do|fr|sa|so)\b\.?[,:]?\s+/i, '').replace(/^\d{1,2}\.\d{1,2}\.?(\d{2,4})?[,:]?\s*/, '').trim() || raw;
+    var title = raw.replace(/\b(heute|gestern|vorgestern|morgen|übermorgen|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b[,:]?\s*/ig, '').replace(/^(mo|di|mi|do|fr|sa|so)\b\.?[,:]?\s+/i, '').replace(/^\d{1,2}\.\d{1,2}\.?(\d{2,4})?[,:]?\s*/, '').trim() || raw;
     title = title.replace(/\btss\s*[:=]?\s*\d+(?:[.,]\d+)?/ig, ' ').replace(/\d+(?:[.,]\d+)?\s*tss\b/ig, ' ').replace(/\bkj\s*[:=]?\s*\d+(?:[.,]\d+)?/ig, ' ').replace(/\d+(?:[.,]\d+)?\s*kj\b/ig, ' ').replace(/\s{2,}/g, ' ').trim() || title;
     if (tm !== null) {
       title = title.replace(/(?:\b(?:um|ab|gegen)\s*)?\b\d{1,2}:\d{2}\s*uhr/i, '').replace(/(?:\b(?:um|ab|gegen)\s*)?\b\d{1,2}\s*uhr(?:\s*\d{2}(?!\s*(?:min|h\b|std)))?/i, '').replace(/\b(?:um|ab|gegen)\s*\d{1,2}:\d{2}\b/i, '').replace(/\b\d{1,2}:\d{2}\b(?!\s*(?:h\b|std))/, '').replace(/\b(?:fr[üu]h|morgens|vormittags|mittags|nachmittags|abends)\b/i, '').replace(/\s{2,}/g, ' ').trim() || title;

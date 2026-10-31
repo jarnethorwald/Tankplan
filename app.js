@@ -30,6 +30,9 @@
   var q = '', planText = '', planDesc = '', planTitle = '', planUpd = false, xFrom = T.addDays(T.today(), -6), xTo = T.today(), planDay = T.addDays(T.today(), 1), planTime = '', range = 30;
   var lastToday = T.today(), banner = '', busy = false, syncTimer = null, eanMsg = '', isyncBusy = false;
   var barcode = { active: false, busy: false, msg: '' }, barcodeScanner = null, barcodeStartPromise = null, barcodeScriptPromise = null;
+  var UIKEY = 'tankplan.ui';
+  var mealShow = (function () { try { var u = JSON.parse(localStorage.getItem(UIKEY)); if (u && (u.soll || u.ist)) return { soll: !!u.soll, ist: !!u.ist }; } catch (e) {} return { soll: true, ist: true }; })();
+  var doneEdit = null, planDone = false;
   var KIND_ORDER = ['frueh', 'mittag', 'abend', 'snack', 'pre', 'during', 'post'];
 
   function uid() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'x' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
@@ -154,7 +157,11 @@
           var o = { id: 'ic_' + a.id, ext: String(a.id), day: String(a.start_date_local).slice(0, 10), type: type, name: a.name || type, min: min, tm: tm,
             kcal: kcal ? r0(kcal) : null, load: a.icu_training_load || null, lv: T.lvFromLoad(a.icu_training_load, min), net: net, u: Date.now() };
           var old = byId[o.id];
-          if (old) { var same = ['day', 'type', 'name', 'min', 'kcal', 'load', 'lv', 'tm'].every(function (k) { return old[k] === o[k]; }); if (same) return; Object.assign(old, o); } else { S.acts.push(o); }
+          if (old) { var same = ['day', 'type', 'name', 'min', 'kcal', 'load', 'lv', 'tm'].every(function (k) { return old[k] === o[k]; }); if (same) return; Object.assign(old, o); } else {
+            S.acts.push(o);
+            var dup = S.acts.filter(function (x) { return /^man_/.test(x.id) && x.day === o.day && x.type === o.type && (!x.tm || !o.tm || Math.abs(T.tmin(x.tm) - T.tmin(o.tm)) <= 90); })[0];
+            if (dup) { S.acts = S.acts.filter(function (x) { return x !== dup; }); S.del.push({ t: 'acts', id: dup.id }); }
+          }
           n++;
         });
         S.cfg.ilast = Date.now(); S.cfg.istat = 'Aktualisiert um ' + nowHM() + ' Uhr, ' + data.length + ' Einheiten gefunden' +
@@ -314,27 +321,59 @@
   function curLvl() { return (S.profile.lvls || {})[cur] || 3; }
 
   /* ---------- Ansichten ---------- */
+  function sumMacros(it) { var o = { c: 0, p: 0, f: 0 }; it.forEach(function (m) { o.c += m.c; o.p += m.p; o.f += m.f; }); return o; }
+  function firstTime(it) {
+    var best = null, tm = '';
+    it.forEach(function (m) { var mm = T.tmin(m.t); if (mm !== null && (best === null || mm < best)) { best = mm; tm = m.t; } });
+    return tm;
+  }
+  function itemsHtml(it) {
+    return '<div class="items">' + it.map(function (m) { return '<div class="item"><span>' + esc(m.t || '') + ' ' + esc(m.name) + '</span><span>' + r0(m.c) + ' C</span></div>'; }).join('') + '</div>';
+  }
+  function pieBox(c, p, f, cap) { return '<div class="pie-box">' + T.pieSvg(c, p, f, 48) + '<div class="pie-cap">' + cap + '<br>' + esc(T.pieCaption(c, p, f)) + '</div></div>'; }
   function slotHtml(ms, nowMin) {
-    var s = ms.s, it = ms.items, ec = 0, ep = 0, ef = 0;
-    it.forEach(function (m) { ec += m.c; ep += m.p; ef += m.f; });
-    var pill;
-    if (it.length && s.c > 0) { var qv = ec / s.c; pill = '<span class="pill ' + (qv >= 0.8 ? 'ok' : qv >= 0.4 ? 'mid' : 'low') + '"><i></i>' + r0(qv * 100) + ' %</span>'; }
-    else if (it.length) pill = '<span class="pill ok"><i></i>erledigt</span>';
-    else pill = '<span class="pill"><i></i>' + (nowMin !== null && s.at + 90 < nowMin ? 'verpasst' : 'offen') + '</span>';
+    var s = ms.s, it = ms.items, sh = mealShow, e = sumMacros(it), ec = e.c;
     var macros = s.kind === 'during' ? r0(s.c) + ' g Carbs' : r0(s.c) + ' C · ' + r0(s.p) + ' P · ' + r0(s.f) + ' F';
     var vf = [];
     if (s.veg >= 20) vf.push('Gemüse ca. ' + (Math.round(s.veg / 10) * 10) + ' g');
     if (s.fruit >= 20) vf.push('Obst ca. ' + (Math.round(s.fruit / 10) * 10) + ' g');
-    var pc = it.length ? [ec, ep, ef] : [s.c, s.p, s.f];
-    var h = '<article class="card slot"><div class="slot-top"><span class="clock">' + esc(s.time) + '</span><div class="slot-main"><div class="slot-title">' + esc(s.label) + '</div>' +
-      '<div class="slot-sub">' + macros + (vf.length ? ' · ' + vf.join(' · ') : '') + '</div>' + (s.rel ? '<div class="slot-sub">' + esc(s.rel) + (s.assumed ? ' (Uhrzeit angenommen)' : '') + '</div>' : '') + '<div style="margin-top:6px">' + pill + '</div></div>' +
-      '<div class="pie-box">' + T.pieSvg(pc[0], pc[1], pc[2], 48) + '<div class="pie-cap">' + (it.length ? 'Ist' : 'Plan') + '<br>' + esc(T.pieCaption(pc[0], pc[1], pc[2])) + '</div></div></div>' +
-      '<p class="note">' + esc(s.focus) + '</p>';
-    if (it.length) {
-      h += '<div class="items">' + it.map(function (m) { return '<div class="item"><span>' + esc(m.t || '') + ' ' + esc(m.name) + '</span><span>' + r0(m.c) + ' C</span></div>'; }).join('') + '</div>';
+    var btn = '<button class="btn ghost sm" data-a="logslot" data-k="' + s.kind + '" data-tm="' + esc(it.length && sh.ist && !sh.soll ? firstTime(it) || s.time : s.time) + '">' + (it.length ? 'Mehr eintragen' : 'Eintragen') + '</button>';
+    var pill = '';
+    if (sh.soll && sh.ist) {
+      if (it.length && s.c > 0) { var qv = ec / s.c; pill = '<span class="pill ' + (qv >= 0.8 ? 'ok' : qv >= 0.4 ? 'mid' : 'low') + '"><i></i>' + r0(qv * 100) + ' %</span>'; }
+      else if (it.length) pill = '<span class="pill ok"><i></i>erledigt</span>';
+      else pill = '<span class="pill"><i></i>' + (nowMin !== null && s.at + 90 < nowMin ? 'verpasst' : 'offen') + '</span>';
     }
-    h += '<button class="btn ghost sm" data-a="logslot" data-k="' + s.kind + '" data-tm="' + esc(s.time) + '">' + (it.length ? 'Mehr eintragen' : 'Eintragen') + '</button></article>';
-    return h;
+    /* Nur Ist: tatsächliche Uhrzeit und Verteilung, nichts anzeigen, wenn nichts gegessen wurde */
+    if (!sh.soll) {
+      if (!it.length) return '';
+      var tmI = firstTime(it);
+      return '<article class="card slot"><div class="slot-top"><span class="clock">' + esc(tmI || '–') + '</span><div class="slot-main"><div class="slot-title">' + esc(s.label) + '</div>' +
+        '<div class="slot-sub">' + (s.kind === 'during' ? r0(e.c) + ' g Carbs' : r0(e.c) + ' C · ' + r0(e.p) + ' P · ' + r0(e.f) + ' F') + '</div></div>' + pieBox(e.c, e.p, e.f, 'Ist') + '</div>' +
+        itemsHtml(it) + btn + '</article>';
+    }
+    /* Nur Soll oder beides */
+    var pies = pieBox(s.c, s.p, s.f, 'Soll');
+    var two = sh.ist && it.length;
+    if (two) pies += pieBox(e.c, e.p, e.f, 'Ist');
+    var h = '<article class="card slot"><div class="slot-top"><span class="clock">' + esc(s.time) + '</span><div class="slot-main"><div class="slot-title">' + esc(s.label) + '</div>' +
+      '<div class="slot-sub">' + (sh.ist ? 'Soll: ' : '') + macros + (vf.length ? ' · ' + vf.join(' · ') : '') + '</div>' +
+      (s.rel ? '<div class="slot-sub">' + esc(s.rel) + (s.assumed ? ' (Uhrzeit angenommen)' : '') + '</div>' : '') +
+      (sh.ist && it.length ? '<div class="slot-sub">Ist: ' + esc(firstTime(it) || '–') + ' Uhr · ' + (s.kind === 'during' ? r0(e.c) + ' g Carbs' : r0(e.c) + ' C · ' + r0(e.p) + ' P · ' + r0(e.f) + ' F') + '</div>' : '') +
+      (pill ? '<div style="margin-top:6px">' + pill + '</div>' : '') + '</div>' + (two ? '' : pies) + '</div>' + (two ? '<div class="pies-row">' + pies + '</div>' : '') +
+      '<p class="note">' + esc(s.focus) + '</p>';
+    if (sh.ist && it.length) h += itemsHtml(it);
+    return h + btn + '</article>';
+  }
+  function mealToggleHtml() {
+    return '<div class="seg mealtog" role="group" aria-label="Anzeige Soll und Ist">' +
+      [['soll', 'Soll (Vorschlag)'], ['ist', 'Ist (gegessen)']].map(function (x) { return '<button type="button" data-a="mealtog" data-k="' + x[0] + '" aria-pressed="' + mealShow[x[0]] + '">' + x[1] + '</button>'; }).join('') + '</div>';
+  }
+  function doneForm(id, tmDef, minDef) {
+    if (!doneEdit || doneEdit.id !== id) return '<button class="btn ghost sm" data-a="markdone" data-id="' + esc(id) + '" data-tm="' + esc(tmDef || '') + '" data-min="' + minDef + '">Als absolviert eintragen</button>';
+    return '<div class="d2" role="group" aria-label="Absolviert eintragen"><label class="f">Uhrzeit<input id="done-tm" type="time" value="' + esc(doneEdit.tm) + '"></label>' +
+      '<label class="f">Dauer (min)<input id="done-min" type="number" inputmode="numeric" min="5" max="900" value="' + doneEdit.min + '"></label>' +
+      '<button class="btn sm" data-a="donesave">Speichern</button><button class="btn ghost sm" data-a="donecancel">Abbrechen</button></div>';
   }
 
   function lvlCard() {
@@ -375,16 +414,25 @@
     h += '<div class="sec-head"><h2>Training</h2><span class="note">' + (t.info.length ? t.trainCarbs + ' g Carbs rund ums Training' : 'Keine Einheit') + '</span></div>';
     if (!t.info.length) h += '<div class="card empty">Keine Einheit an diesem Tag. Im Reiter „Plan“ trägst du kommende Workouts mit Uhrzeit ein, die Einheiten aus intervals.icu kommen von selbst.</div>';
     t.info.forEach(function (x) {
-      var s = x.s, done = s.src === 'act';
+      var s = x.s, done = s.src === 'act', canDone = !done && s.id && cur <= T.today();
       h += '<article class="card sess"><div class="sess-top"><div><div class="sess-title">' + esc(s.title || s.type) + '<span class="tag ' + (done ? 'done' : '') + '">' + (done ? 'absolviert' : 'geplant') + '</span></div>' +
         '<div class="sess-sub">' + (s.tm ? esc(s.tm) + ' Uhr · ' : '') + esc(s.type) + ' · ' + T.INT[s.lv] + ' · ' + s.min + ' min · ca. ' + r0(x.kcal) + ' kcal' + (x.tss ? ' · ' + r0(x.tss) + ' TSS' : '') + (done ? '' : ' (' + x.basis + ')') + '</div></div>' +
-        (!done && s.id ? '<button class="x" data-a="delplan" data-id="' + s.id + '" aria-label="Einheit löschen">×</button>' : '') + '</div></article>';
+        (!done && s.id ? '<button class="x" data-a="delplan" data-id="' + s.id + '" aria-label="Einheit löschen">×</button>' : '') +
+        (done && s.man ? '<button class="x" data-a="delact" data-id="' + esc(s.id) + '" aria-label="Eingetragene Einheit löschen">×</button>' : '') + '</div>' +
+        (canDone ? doneForm(s.id, s.tm || (cur === T.today() ? nowHM() : ''), s.min) : '') + '</article>';
+    });
+    (r.sess.dropped || []).forEach(function (p) {
+      h += '<article class="card sess"><div class="sess-top"><div><div class="sess-title">' + esc(p.title || p.type) + '<span class="tag">nicht eingetragen</span></div>' +
+        '<div class="sess-sub">' + (p.tm ? esc(p.tm) + ' Uhr · ' : '') + esc(p.type) + ' · ' + p.min + ' min · geplant, aber nicht als absolviert markiert. Zählt nicht in den Bedarf.</div></div>' +
+        '<button class="x" data-a="delplan" data-id="' + esc(p.id) + '" aria-label="Einheit löschen">×</button></div>' + doneForm(p.id, p.tm || '', p.min) + '</article>';
     });
 
     h += '<div class="sec-head"><h2>Mahlzeitenplan</h2><span class="note">' + r.mp.length + ' Punkte</span></div>' + T.pieLegend();
     if (r.mp.some(function (s) { return s.assumed; })) h += '<p class="note" style="margin:0">Für Einheiten ohne Uhrzeit nehme ich 17:00 an. Trage die Uhrzeit im Plan ein, dann passt sich alles an.</p>';
+    h += mealToggleHtml();
     r.match.slots.forEach(function (ms) { h += slotHtml(ms, nowMin); });
-    if (r.match.extra.length) {
+    if (mealShow.ist && !mealShow.soll && !r.n) h += '<div class="card empty">Noch nichts gegessen. Unter „Soll“ siehst du den Vorschlag, mit „Eintragen“ erfasst du Essen.</div>';
+    if (mealShow.ist && r.match.extra.length) {
       h += '<section class="card"><div class="eyebrow">Zusätzlich gegessen</div>' + r.match.extra.map(function (e) { return '<div class="item"><span>' + esc(e.t || '') + ' ' + esc(e.name) + '</span><span>' + r0(e.c) + ' C</span></div>'; }).join('') + '</section>';
     }
 
@@ -402,6 +450,12 @@
     return h;
   }
 
+  /* Geplante oder nachträglich eingetragene Einheit als absolviert speichern (landet in S.acts und wird mit Supabase gesichert) */
+  function actFromItem(it, tm, min) {
+    var info = T.sessInfo({ type: it.type, min: min, lv: it.lv, tss: it.tss, kj: it.kj, desc: it.descr, title: it.title }, S.profile), id = 'man_' + uid();
+    return { id: id, ext: id, day: it.day, type: it.type, name: it.title || it.type, min: min, tm: tm || null,
+      kcal: /^Schätzung/.test(info.basis) ? null : r0(info.kcal), load: info.tss ? r0(info.tss) : null, lv: info.lv, net: true, u: Date.now() };
+  }
   function libFind(title) {
     var t = String(title || '').trim().toLowerCase(); if (!t) return null;
     return (S.profile.lib || []).filter(function (x) { return x.title.trim().toLowerCase() === t; })[0] || null;
@@ -449,7 +503,8 @@
       '<label class="f full" for="plantext">Tag, Uhrzeit, Dauer (eine Zeile pro Einheit)<textarea id="plantext" rows="2" placeholder="morgen 17:30 120 min&#10;Sa 9 Uhr 90 min&#10;(ohne Titel: Rad Intervalle 75 min 90 TSS 650 kJ)">' + esc(planText) + '</textarea></label>' +
       '<label class="f full" for="plandesc">TP-Beschreibung (Schritte aus TrainingPeaks). Bei gewählter Vorlage vorausgefüllt und änderbar, zum Beispiel „Repeat 8 times“ auf 10<textarea id="plandesc" placeholder="Warm up 15 min @ 150-180 W&#10;Repeat 8 times&#10;Hard 30 sec @ 360-435 W&#10;Easy 30 sec @ 150-180 W&#10;Cool Down 7 min @ 120-180 W">' + esc(planDesc) + '</textarea></label>' +
       '<label class="chk full"><input type="checkbox" id="planupd"' + (planUpd ? ' checked' : '') + '> Vorlage mit dieser Beschreibung aktualisieren</label>' +
-      '<div class="full note" id="planprev">' + planPreview() + '</div><button class="btn full" type="submit">Hinzufügen</button></form>';
+      '<label class="chk full"><input type="checkbox" id="plandone"' + (planDone ? ' checked' : '') + '> Bereits absolviert (nachträglich eintragen, z. B. „gestern Stabi 50 min“)</label>' +
+      '<div class="full note" id="planprev">' + planPreview() + '</div><button class="btn full" type="submit">' + (planDone ? 'Als absolviert eintragen' : 'Hinzufügen') + '</button></form>';
     if (S.profile.lib.length) {
       h += '<details class="card"><summary><b>Bibliothek (' + S.profile.lib.length + ')</b></summary>' + S.profile.lib.slice().sort(function (a, b) { return a.title.localeCompare(b.title, 'de'); }).map(function (x) {
         var pd = T.parseWorkoutText(x.descr, S.profile);
@@ -465,9 +520,10 @@
         var summary = s.min + ' min · ' + T.INT[si.lv] + (si.tss ? ' · ' + r0(si.tss) + ' TSS' : '') + (si.ifactor ? ' · IF ' + si.ifactor.toFixed(2) : '') + ' · ca. ' + r0(si.kcal) + ' kcal (' + si.basis + ')';
         var displayTitle = (s.title || s.type).replace(/\b\d+(?:[.,]\d+)?\s*(?:min|minuten|h|std|stunden?)\b/ig, ' ').replace(/\s{2,}/g, ' ').trim() || s.type;
         h += '<div class="plan-workout"><div class="plan-workout-head"><span class="plan-workout-name">' + (s.tm ? esc(s.tm) + ' · ' : '') + esc(displayTitle) + '<span class="tag ' + (s.src === 'act' ? 'done' : '') + '">' + (s.src === 'act' ? 'absolviert' : 'geplant') + '</span></span>' +
-          (s.src === 'plan' ? '<button class="x" data-a="delplan" data-id="' + esc(s.id) + '" aria-label="Löschen">×</button>' : '') + '<span class="plan-workout-summary">' + summary + '</span></div>';
+          (s.src === 'plan' ? '<button class="x" data-a="delplan" data-id="' + esc(s.id) + '" aria-label="Löschen">×</button>' : '') + (s.man ? '<button class="x" data-a="delact" data-id="' + esc(s.id) + '" aria-label="Eingetragene Einheit löschen">×</button>' : '') + '<span class="plan-workout-summary">' + summary + '</span></div>';
         if (s.src === 'plan') h += '<div class="plan-metrics"><label class="plan-metric">Geplante TSS<input type="number" inputmode="decimal" min="1" max="1000" step="1" data-plan-id="' + esc(s.id) + '" data-plan-metric="tss" aria-label="Geplante TSS für ' + esc(displayTitle) + '" placeholder="TSS" value="' + (s.tss ? esc(s.tss) : '') + '"></label><label class="plan-metric">Geplante kJ<input type="number" inputmode="decimal" min="1" max="10000" step="1" data-plan-id="' + esc(s.id) + '" data-plan-metric="kj" aria-label="Geplante kJ für ' + esc(displayTitle) + '" placeholder="kJ" value="' + (s.kj ? esc(s.kj) : '') + '"></label><span class="plan-metric-hint">Änderung direkt gespeichert · 1 kJ ≈ 1 kcal</span></div>';
         if (s.src === 'plan') h += '<details class="plan-desc"><summary>TP-Beschreibung' + (s.desc ? ' (hinterlegt)' : ' hinzufügen') + '</summary><textarea data-plan-id="' + esc(s.id) + '" data-plan-metric="desc" rows="5" aria-label="TP-Beschreibung" placeholder="Beschreibung aus TrainingPeaks einfügen">' + esc(s.desc || '') + '</textarea>' + (si.desc ? '<div class="note">' + esc(descSummary(si.desc)) + '</div>' : '') + '</details>';
+        if (s.src === 'plan' && r.day === tdy) h += doneForm(s.id, s.tm || nowHM(), s.min);
         h += '</div>';
       });
       h += '</div>';
@@ -666,6 +722,25 @@
     }
     if (a === 'delset') { S.profile.sets = S.profile.sets.filter(function (x) { return x.id !== d.id; }); S.profileU = Date.now(); save(); render(); return; }
     if (a === 'resetmacros') { delete S.profile.macroPct; S.profileU = Date.now(); save(); render(); return; }
+    if (a === 'mealtog') {
+      var other = d.k === 'soll' ? 'ist' : 'soll';
+      if (mealShow[d.k] && !mealShow[other]) return;
+      mealShow[d.k] = !mealShow[d.k];
+      try { localStorage.setItem(UIKEY, JSON.stringify(mealShow)); } catch (er) {}
+      render(); return;
+    }
+    if (a === 'markdone') { doneEdit = { id: d.id, tm: d.tm || '', min: +d.min || 60 }; render(); return; }
+    if (a === 'donecancel') { doneEdit = null; render(); return; }
+    if (a === 'donesave') {
+      if (!doneEdit) return;
+      var pl = S.plan.filter(function (x) { return x.id === doneEdit.id; })[0];
+      if (!pl) { doneEdit = null; render(); return; }
+      if (!(doneEdit.min >= 5 && doneEdit.min <= 900)) { flash('Dauer zwischen 5 und 900 Minuten eintragen.'); return; }
+      S.acts.push(actFromItem(pl, doneEdit.tm, doneEdit.min));
+      S.plan = S.plan.filter(function (x) { return x !== pl; }); S.del.push({ t: 'plan', id: pl.id });
+      doneEdit = null; save(); render(); flash('Einheit als absolviert gespeichert.'); return;
+    }
+    if (a === 'delact') { S.acts = S.acts.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'acts', id: d.id }); save(); render(); return; }
     if (a === 'delplan') { S.plan = S.plan.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'plan', id: d.id }); save(); render(); return; }
     if (a === 'delmeal') { S.meals = S.meals.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'meals', id: d.id }); save(); render(); return; }
     if (a === 'logslot') { ctx = { day: cur, kind: d.k, time: d.tm, auto: false }; view = 'log'; sel = null; q = ''; render(); window.scrollTo(0, 0); return; }
@@ -766,6 +841,9 @@
   var MT_IDS = { 'p-mb': 'b', 'p-ml': 'l', 'p-md': 'd', 'p-ms': 's' };
   document.addEventListener('change', function (e) {
     var el = e.target, id = el.id, v = el.value, P = S.profile;
+    if (id === 'done-tm') { if (doneEdit) doneEdit.tm = v; return; }
+    if (id === 'done-min') { if (doneEdit) doneEdit.min = Number(v); return; }
+    if (id === 'plandone') { planDone = el.checked; if (planDone && planDay > T.today()) planDay = T.today(); render(); return; }
     if (el.dataset && el.dataset.planMetric) {
       var workout = S.plan.find(function (item) { return item.id === el.dataset.planId; });
       var metric = el.dataset.planMetric, metricValue = el.value === '' ? null : Number(el.value);
@@ -836,16 +914,22 @@
       var n = 0, title = planTitle.trim(), lib = libFind(title), dtext = effDesc(), dp = dtext ? T.parseWorkoutText(dtext, S.profile) : null;
       if (dtext && !dp) { flash('In der Beschreibung keine Abschnitte mit Watt-Angabe erkannt.'); return; }
       if (title && !dtext && !planText.trim()) { flash('Zu diesem Titel gibt es noch keine Vorlage. Füge die TP-Beschreibung ein.'); return; }
+      var doneN = 0, tdy2 = T.today();
       planText.split('\n').forEach(function (l) {
         var x = T.parseLine(l, planDay); if (!x || x.rest) return;
+        if (planDone && x.day > tdy2 && /\b(mo|di|mi|do|fr|sa|so|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/i.test(l) && !/morgen/i.test(l)) x.day = T.addDays(x.day, -7);
+        if (planDone && x.day > tdy2) { flash('Absolviert geht nur für heute oder früher. Nimm „gestern“, einen Wochentag oder ein Datum in der Vergangenheit.'); n = -999; return; }
         var it = { id: uid(), day: x.day, title: title || x.title, type: x.type, min: x.min, lv: x.lv, tss: x.tss || null, kj: x.kj || null, tm: x.tm || planTime || null, u: Date.now() };
         if (dp && (title || n === 0)) { it.descr = dtext; it.min = x.minGiven ? x.min : r0(dp.min); it.type = 'Rad'; }
-        S.plan.push(it); n++;
+        if (planDone) { S.acts.push(actFromItem(it, it.tm, it.min)); doneN++; } else S.plan.push(it);
+        n++;
       });
-      if (dp && n === 0) { S.plan.push({ id: uid(), day: planDay, title: title || 'TP-Workout', type: 'Rad', min: r0(dp.min), lv: dp.ifactor ? (dp.ifactor < 0.7 ? 0 : dp.ifactor < 0.9 ? 1 : 2) : 2, tss: null, kj: null, descr: dtext, tm: planTime || null, u: Date.now() }); n++; }
+      if (n < 0) return;
+      if (dp && n === 0) { var dpItem = ({ id: uid(), day: planDay, title: title || 'TP-Workout', type: 'Rad', min: r0(dp.min), lv: dp.ifactor ? (dp.ifactor < 0.7 ? 0 : dp.ifactor < 0.9 ? 1 : 2) : 2, tss: null, kj: null, descr: dtext, tm: planTime || null, u: Date.now() });
+        if (planDone) { if (planDay > tdy2) { flash('Absolviert geht nur für heute oder früher.'); return; } S.acts.push(actFromItem(dpItem, dpItem.tm, dpItem.min)); doneN++; } else S.plan.push(dpItem); n++; }
       if (title && dp && n) { var saved = libSave(title, dtext, 'Rad', planUpd); if (saved && !lib) flash(n + ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt, Vorlage „' + title + '“ gespeichert.'); }
       planTitle = ''; planUpd = false;
-      planText = ''; planDesc = ''; save(); flash(n ? n + ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt.' : 'Keine Workouts erkannt.');
+      planText = ''; planDesc = ''; save(); flash(n ? n + (planDone ? ' Einheit' + (n === 1 ? '' : 'en') + ' als absolviert eingetragen.' : ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt.') : 'Keine Workouts erkannt.');
     } else if (id === 'customform') {
       var f = { id: uid(), n: document.getElementById('c-n').value.trim(), k: +document.getElementById('c-k').value || 0, c: +document.getElementById('c-c').value || 0,
         p: +document.getElementById('c-p').value || 0, f: +document.getElementById('c-f').value || 0, fi: 0, gr: document.getElementById('c-g').value, co: '', v: '', pn: 'Portion', pg: 100, u: Date.now() };
