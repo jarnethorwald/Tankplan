@@ -206,7 +206,7 @@
       if (i >= 0) { used[i] = true; return; }
       if (d < model.today) { out.dropped.push(p); return; }
       var plannedIntensity = p.tss ? intensityFromTss(p.tss, p.min) : null;
-      out.push({ src: 'plan', type: p.type, min: p.min, lv: plannedIntensity ? plannedIntensity.lv : p.lv, tss: p.tss, kj: p.kj, desc: p.descr, title: p.title, id: p.id, tm: p.tm });
+      out.push({ src: 'plan', type: p.type, min: p.min, lv: plannedIntensity ? plannedIntensity.lv : p.lv, tss: p.tss, kj: p.kj, desc: p.descr, title: p.title, id: p.id, tm: p.tm, day: p.day });
     });
     return out;
   }
@@ -331,7 +331,7 @@
     else if (/kraft|\bgym\b|stabi/.test(low)) type = 'Kraft';
     var lv = 1;
     if (/30\/30|\d+\s*x\s*\d|interval|vo2|schwelle|threshold|\bz[45]\b|\bhit\b|wettkampf|rennen|race|\btest\b|anaerob|sprint|\bftp\b|over.?under/.test(low)) lv = 2;
-    else if (/locker|grundlage|\bga ?1\b|\bz[12]\b|regeneration|recovery|easy|spazier|aktive erholung/.test(low)) lv = 0;
+    else if (/locker|grundlage|\bga ?1\b|\bz[12]\b|\blit\b|regeneration|recovery|easy|spazier|aktive erholung/.test(low)) lv = 0;
     if (tss > 0) lv = intensityFromTss(tss, min).lv;
     var title = raw.replace(/\b(heute|gestern|vorgestern|morgen|übermorgen|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b[,:]?\s*/ig, '').replace(/^(mo|di|mi|do|fr|sa|so)\b\.?[,:]?\s+/i, '').replace(/^\d{1,2}\.\d{1,2}\.?(\d{2,4})?[,:]?\s*/, '').trim() || raw;
     title = title.replace(/\btss\s*[:=]?\s*\d+(?:[.,]\d+)?/ig, ' ').replace(/\d+(?:[.,]\d+)?\s*tss\b/ig, ' ').replace(/\bkj\s*[:=]?\s*\d+(?:[.,]\d+)?/ig, ' ').replace(/\d+(?:[.,]\d+)?\s*kj\b/ig, ' ').replace(/\s{2,}/g, ' ').trim() || title;
@@ -968,21 +968,18 @@
 
   function monday(d) { var x = parseDay(d); var k = (x.getDay() + 6) % 7; return addDays(d, -k); }
 
-  function reportHtml(rows) {
-    var logged = rows.filter(function (r) { return r.n > 0; });
-    var h = '';
-    if (!logged.length) return '<div class="card empty">In diesem Zeitraum gibt es noch keine Einträge.</div>';
+  function reportParts(rows, ws) {
+    var logged = rows.filter(function (r) { return r.n > 0; }), P = { tiles: '', veg: '', weeks: '', empty: !logged.length };
+    if (!logged.length) return P;
     var avgC = avg(logged, function (r) { return r.st.c; }), avgT = avg(logged, function (r) { return r.t.c; });
     var avgP = avg(logged, function (r) { return r.st.p; }), avgF = avg(logged, function (r) { return r.st.f; });
     var avgK = avg(logged, function (r) { return r.st.k; });
     var hit = logged.filter(function (r) { return r.st.c >= r.t.c * 0.9; }).length;
-    h += '<div class="tiles">' +
+    P.tiles = '<div class="tiles">' +
       tile('Tage mit Eintrag', logged.length + ' von ' + rows.length) +
       tile('Ø Carbs', de(avgC) + ' g', 'Ziel Ø ' + de(avgT) + ' g (' + de(avgT ? avgC / avgT * 100 : 0) + ' %)') +
       tile('Carb-Ziel erreicht', hit + ' von ' + logged.length + ' Tagen', 'ab 90 % des Ziels') +
       tile('Ø Eiweiß', de(avgP) + ' g', 'Ø Fett ' + de(avgF) + ' g · Ø ' + de(avgK) + ' kcal') + fuelTiles(rows) + '</div>';
-    h += '<section class="card"><div class="eyebrow">Carbs pro Tag, Strich = Ziel</div><div class="scroll">' + chartSvg(rows) + '</div></section>';
-
     var ok = { veg: 0, fruit: 0, C: 0, A: 0, K: 0, F: 0, E: 0 };
     logged.forEach(function (r) {
       var a = ampel(r.st);
@@ -991,25 +988,160 @@
       Object.keys(VITN).forEach(function (k) { if (a.vit[k].lv === 'ok') ok[k]++; });
     });
     var avgV = avg(logged, function (r) { return r.st.veg; }), avgO = avg(logged, function (r) { return r.st.fruit; });
-    h += '<section class="card"><div class="eyebrow">Gemüse, Obst und Vitamine (Einschätzung)</div>' +
+    P.veg = '<section class="card"><div class="eyebrow">Gemüse, Obst und Vitamine (Einschätzung)</div>' +
       '<p class="note">Ø Gemüse ' + de(avgV) + ' g (Ziel ' + GOALS.veg + ') · Ø Obst ' + de(avgO) + ' g (Ziel ' + GOALS.fruit + ')</p><div class="ampel">' +
       pill('Gemüse', ok.veg, logged.length) + pill('Obst', ok.fruit, logged.length) +
       Object.keys(VITN).map(function (k) { return pill(VITN[k], ok[k], logged.length); }).join('') + '</div>' +
       '<p class="note">Anteil der Tage, an denen genug reiche Quellen gegessen wurden. Die Einschätzung zählt nur Lebensmittel aus dem Logbuch und ersetzt keine Blutwerte.</p></section>';
-
     var weeks = {};
     rows.forEach(function (r) { var k = monday(r.day); (weeks[k] = weeks[k] || []).push(r); });
-    var keys = Object.keys(weeks).sort().reverse();
-    h += '<section class="card"><div class="eyebrow">Wochen</div><div class="scroll"><table><thead><tr><th>Woche ab</th><th>Tage</th><th>Ø Carbs</th><th>Ziel</th><th>Ø Eiweiß</th><th>Ø Gem.+Obst</th><th>Training</th></tr></thead><tbody>';
+    var keys = Object.keys(weeks).sort().reverse(), hasW = (ws || []).length > 0;
+    var h = '<section class="card"><div class="eyebrow">Wochen</div><div class="scroll"><table><thead><tr><th>Woche ab</th><th>Tage</th><th>Ø Carbs</th><th>Ziel</th><th>Ø Eiweiß</th><th>Ø Fett</th><th>Ø Ballast.</th><th>Ø Gem.+Obst</th>' + (hasW ? '<th>Ø kg</th>' : '') + '<th>Training</th></tr></thead><tbody>';
     keys.forEach(function (k) {
       var w = weeks[k], lg = w.filter(function (r) { return r.n > 0; });
       var tm = 0; w.forEach(function (r) { tm += r.trainMin; });
+      var wk = (ws || []).filter(function (x) { return x.day >= k && x.day <= addDays(k, 6); });
+      function av(f) { return lg.length ? de(avg(lg, f)) : '–'; }
       h += '<tr><td>' + parseDay(k).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' }) + '</td><td>' + lg.length + '</td>' +
-        '<td>' + (lg.length ? de(avg(lg, function (r) { return r.st.c; })) : '–') + '</td><td>' + (lg.length ? de(avg(lg, function (r) { return r.t.c; })) : '–') + '</td>' +
-        '<td>' + (lg.length ? de(avg(lg, function (r) { return r.st.p; })) : '–') + '</td><td>' + (lg.length ? de(avg(lg, function (r) { return r.st.veg + r.st.fruit; })) + ' g' : '–') + '</td>' +
+        '<td>' + av(function (r) { return r.st.c; }) + '</td><td>' + av(function (r) { return r.t.c; }) + '</td>' +
+        '<td>' + av(function (r) { return r.st.p; }) + '</td><td>' + av(function (r) { return r.st.f; }) + '</td><td>' + av(function (r) { return r.st.fi; }) + '</td><td>' + (lg.length ? de(avg(lg, function (r) { return r.st.veg + r.st.fruit; })) + ' g' : '–') + '</td>' +
+        (hasW ? '<td>' + (wk.length ? de(avg(wk, function (x) { return x.kg; }), 1) : '–') + '</td>' : '') +
         '<td>' + de(tm / 60, 1) + ' h</td></tr>';
     });
-    return h + '</tbody></table></div></section>';
+    P.weeks = h + '</tbody></table></div></section>';
+    return P;
+  }
+  function reportHtml(rows) {
+    var P = reportParts(rows);
+    if (P.empty) return '<div class="card empty">In diesem Zeitraum gibt es noch keine Einträge.</div>';
+    return P.tiles + '<section class="card"><div class="eyebrow">Carbs pro Tag, Strich = Ziel</div><div class="scroll">' + chartSvg(rows) + '</div></section>' + P.veg + P.weeks;
+  }
+
+  /* ---------- Verlauf pro Tag (wählbare Werte) ---------- */
+  var METRICS = [
+    { k: 'c', n: 'Kohlenhydrate', s: 'Carbs', col: '#D98719', u: 'g', get: function (r) { return r.st.c; }, tgt: function (r) { return r.t.c; } },
+    { k: 'p', n: 'Eiweiß', s: 'Eiweiß', col: '#16836F', u: 'g', get: function (r) { return r.st.p; }, tgt: function (r) { return r.t.p; } },
+    { k: 'f', n: 'Fett', s: 'Fett', col: '#C95F78', u: 'g', get: function (r) { return r.st.f; }, tgt: function (r) { return r.t.f; } },
+    { k: 'fi', n: 'Ballaststoffe', s: 'Ballast.', col: '#8A6A3B', u: 'g', get: function (r) { return r.st.fi; }, tgt: function (r) { return Math.max(30, r0(14 * r.t.kcal / 1000)); } },
+    { k: 'veg', n: 'Gemüse', s: 'Gemüse', col: '#3DA35D', u: 'g', get: function (r) { return r.st.veg; }, tgt: function () { return GOALS.veg; } },
+    { k: 'fruit', n: 'Obst', s: 'Obst', col: '#7B61D6', u: 'g', get: function (r) { return r.st.fruit; }, tgt: function () { return GOALS.fruit; } },
+    { k: 'kcal', n: 'Kalorien', s: 'kcal', col: '#5B6B65', u: 'kcal', get: function (r) { return r.st.k; }, tgt: function (r) { return r.t.kcal; } }
+  ];
+  function metricOf(k) { return METRICS.filter(function (m) { return m.k === k; })[0]; }
+  function markSvg(i, x, y, col, rad) {
+    x = +x; y = +y;
+    var f = 'fill="' + col + '" stroke="#fff" stroke-width="1"';
+    if (i % 4 === 1) return '<rect x="' + (x - rad) + '" y="' + (y - rad) + '" width="' + (2 * rad) + '" height="' + (2 * rad) + '" ' + f + '/>';
+    if (i % 4 === 2) return '<polygon points="' + x + ',' + (y - rad - 0.8) + ' ' + (x + rad + 0.8) + ',' + (y + rad) + ' ' + (x - rad - 0.8) + ',' + (y + rad) + '" ' + f + '/>';
+    if (i % 4 === 3) return '<polygon points="' + x + ',' + (y - rad - 1) + ' ' + (x + rad + 1) + ',' + y + ' ' + x + ',' + (y + rad + 1) + ' ' + (x - rad - 1) + ',' + y + '" ' + f + '/>';
+    return '<circle cx="' + x + '" cy="' + y + '" r="' + rad + '" ' + f + '/>';
+  }
+  function xLabels(n, x, labelOf, y) {
+    var step = n <= 10 ? 1 : Math.ceil(n / 6), s = '';
+    for (var i = 0; i < n; i += step) s += '<text x="' + x(i) + '" y="' + y + '" text-anchor="middle" class="ax">' + labelOf(i) + '</text>';
+    return s;
+  }
+  function dm(day) { var d = parseDay(day); return d.getDate() + '.' + (d.getMonth() + 1) + '.'; }
+  function trendChartSvg(rows, keys, mode, sel) {
+    var ms = keys.map(metricOf).filter(Boolean), n = rows.length, pct = mode !== 'abs';
+    var W = 360, H = 230, left = 40, right = 8, top = 12, bot = 26, pw = W - left - right, ph = H - top - bot;
+    var data = ms.map(function (m) { return rows.map(function (r) { if (!r.n) return null; var v = m.get(r); return pct ? (m.tgt(r) > 0 ? v / m.tgt(r) * 100 : 0) : v; }); });
+    var mx = 0, any = false;
+    data.forEach(function (a) { a.forEach(function (v) { if (v !== null) { any = true; if (v > mx) mx = v; } }); });
+    if (!any) return '';
+    var ticks = [];
+    if (pct) { mx = Math.max(125, Math.ceil(mx / 25) * 25); var ts = mx > 200 ? 50 : 25; for (var v0 = 0; v0 <= mx; v0 += ts) ticks.push(v0); }
+    else { var st = mx > 1500 ? 500 : mx > 600 ? 200 : mx > 300 ? 100 : mx > 120 ? 50 : mx > 50 ? 20 : 10; mx = Math.ceil(Math.max(mx, 10) / st) * st; var ts2 = mx / st > 6 ? st * 2 : st; for (var v1 = 0; v1 <= mx; v1 += ts2) ticks.push(v1); }
+    function y(v) { return top + ph - v / mx * ph; }
+    function x(i) { return left + (i + 0.5) / n * pw; }
+    var unit = pct ? ' %' : '';
+    var s = '<svg class="vchart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Verlauf pro Tag: ' + esc(ms.map(function (m) { return m.n; }).join(', ')) + (pct ? ' in Prozent des Ziels' : '') + '">';
+    ticks.forEach(function (v) { s += '<line x1="' + left + '" x2="' + (W - right) + '" y1="' + y(v) + '" y2="' + y(v) + '" class="gl"/><text x="' + (left - 5) + '" y="' + (y(v) + 3.5) + '" text-anchor="end" class="ax">' + r0(v) + unit + '</text>'; });
+    if (pct) s += '<line x1="' + left + '" x2="' + (W - right) + '" y1="' + y(100) + '" y2="' + y(100) + '" class="t100"/><text x="' + (W - right) + '" y="' + (y(100) - 3) + '" text-anchor="end" class="ax">Ziel</text>';
+    var si = sel ? rows.map(function (r) { return r.day; }).indexOf(sel) : -1;
+    if (si >= 0) s += '<rect x="' + (left + si / n * pw) + '" y="' + top + '" width="' + (pw / n) + '" height="' + ph + '" class="selband"/>';
+    var bars = ms.length === 1 && !pct && n <= 45;
+    ms.forEach(function (m, mi) {
+      var d = data[mi];
+      if (bars) {
+        var bw = Math.max(2, pw / n * 0.68);
+        d.forEach(function (v, i) {
+          if (v === null) return;
+          s += '<rect x="' + (x(i) - bw / 2) + '" y="' + y(v) + '" width="' + bw + '" height="' + Math.max(0, top + ph - y(v)) + '" rx="2" fill="' + m.col + '"/>';
+          s += '<line x1="' + (x(i) - bw / 2 - 2) + '" x2="' + (x(i) + bw / 2 + 2) + '" y1="' + y(m.tgt(rows[i])) + '" y2="' + y(m.tgt(rows[i])) + '" class="tg"/>';
+        });
+        return;
+      }
+      var path = '', open = false;
+      d.forEach(function (v, i) { if (v === null) { open = false; return; } path += (open ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); open = true; });
+      s += '<path d="' + path + '" fill="none" stroke="' + m.col + '" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
+      d.forEach(function (v, i) {
+        if (v === null) return;
+        if (n <= 45) s += markSvg(mi, x(i).toFixed(1), y(v).toFixed(1), m.col, 3.2);
+        else if ((i === 0 || d[i - 1] === null) && (i === n - 1 || d[i + 1] === null)) s += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="1.6" fill="' + m.col + '"/>';
+      });
+    });
+    s += xLabels(n, x, function (i) { return dm(rows[i].day); }, H - 8);
+    var hw = pw / n;
+    rows.forEach(function (r, i) { s += '<rect x="' + (left + i * hw) + '" y="' + top + '" width="' + hw + '" height="' + ph + '" fill="transparent" data-a="chartday" data-d="' + r.day + '"/>'; });
+    return s + '</svg>';
+  }
+  function trendTableHtml(rows, keys, mode) {
+    var ms = keys.map(metricOf).filter(Boolean), logged = rows.filter(function (r) { return r.n > 0; });
+    if (!logged.length) return '';
+    var h = '<div class="scroll"><table class="ttab"><thead><tr><th></th><th>Ø ist</th><th>Ø Ziel</th><th>Quote</th></tr></thead><tbody>';
+    ms.forEach(function (m, i) {
+      var a = avg(logged, m.get), t = avg(logged, function (r) { return m.tgt(r); });
+      h += '<tr><td><span class="sw" style="background:' + m.col + '"></span>' + esc(m.n) + '</td><td>' + de(a) + ' ' + m.u + '</td><td>' + de(t) + ' ' + m.u + '</td><td>' + de(t ? a / t * 100 : 0) + ' %</td></tr>';
+    });
+    return h + '</tbody></table></div>';
+  }
+  function trendDayHtml(rows, keys, sel) {
+    var r = rows.filter(function (x) { return x.day === sel; })[0];
+    if (!r) return '<p class="note">Tippe im Diagramm auf einen Tag, dann siehst du hier die genauen Werte.</p>';
+    var h = '<div class="dayrd"><div class="eyebrow">' + esc(dayLabel(r.day)) + '</div>';
+    if (!r.n) return h + '<p class="note">Für diesen Tag ist kein Essen eingetragen.</p></div>';
+    h += '<div class="scroll"><table class="ttab"><tbody>';
+    keys.map(metricOf).filter(Boolean).forEach(function (m) {
+      var v = m.get(r), t = m.tgt(r);
+      h += '<tr><td><span class="sw" style="background:' + m.col + '"></span>' + esc(m.n) + '</td><td>' + de(v) + ' ' + m.u + '</td><td>Ziel ' + de(t) + '</td><td>' + de(t ? v / t * 100 : 0) + ' %</td></tr>';
+    });
+    return h + '</tbody></table></div></div>';
+  }
+
+  /* ---------- Körpergewicht ---------- */
+  function wSorted(ws, from, to) { return (ws || []).filter(function (w) { return (!from || w.day >= from) && (!to || w.day <= to); }).sort(function (a, b) { return a.day < b.day ? -1 : a.day > b.day ? 1 : 0; }); }
+  function wTrendAt(all, day) {
+    var lo = addDays(day, -6), L = all.filter(function (w) { return w.day >= lo && w.day <= day; });
+    return L.length ? avg(L, function (w) { return w.kg; }) : null;
+  }
+  function weightStats(ws, from, to) {
+    var all = wSorted(ws), L = wSorted(ws, from, to);
+    if (!L.length) return null;
+    var kgs = L.map(function (w) { return w.kg; }), first = L[0], last = L[L.length - 1];
+    return { n: L.length, first: first, last: last, delta: last.kg - first.kg, avg: avg(L, function (w) { return w.kg; }), min: Math.min.apply(null, kgs), max: Math.max.apply(null, kgs), trend: wTrendAt(all, last.day) };
+  }
+  function weightChartSvg(ws, from, to) {
+    var all = wSorted(ws), L = wSorted(ws, from, to);
+    if (!L.length) return '';
+    if (L[0].day > from) from = L[0].day < addDays(to, -6) ? L[0].day : addDays(to, -6);
+    var W = 360, H = 200, left = 40, right = 10, top = 12, bot = 26, pw = W - left - right, ph = H - top - bot;
+    var span = Math.max(1, Math.round((parseDay(to) - parseDay(from)) / 86400000));
+    function X(day) { return left + Math.round((parseDay(day) - parseDay(from)) / 86400000) / span * pw; }
+    var trend = L.map(function (w) { return { day: w.day, kg: wTrendAt(all, w.day) }; });
+    var vals = L.map(function (w) { return w.kg; }).concat(trend.map(function (t) { return t.kg; }));
+    var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), rng = mx - mn;
+    var step = rng > 8 ? 2 : rng > 4 ? 1 : 0.5, lo = Math.floor((mn - 0.1) / step) * step, hi = Math.ceil((mx + 0.1) / step) * step;
+    if (hi - lo < 1) hi = lo + 1;
+    var cnt = Math.round((hi - lo) / step); while (cnt > 6) { step *= 2; lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step; cnt = Math.round((hi - lo) / step); }
+    function Y(v) { return top + ph - (v - lo) / (hi - lo) * ph; }
+    var s = '<svg class="vchart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Körpergewicht im Zeitraum">';
+    for (var v = lo; v <= hi + 1e-9; v += step) s += '<line x1="' + left + '" x2="' + (W - right) + '" y1="' + Y(v) + '" y2="' + Y(v) + '" class="gl"/><text x="' + (left - 5) + '" y="' + (Y(v) + 3.5) + '" text-anchor="end" class="ax">' + de(v, step < 1 ? 1 : 0) + '</text>';
+    s += '<path d="' + L.map(function (w, i) { return (i ? 'L' : 'M') + X(w.day).toFixed(1) + ' ' + Y(w.kg).toFixed(1); }).join('') + '" fill="none" class="w-raw"/>';
+    s += '<path d="' + trend.map(function (w, i) { return (i ? 'L' : 'M') + X(w.day).toFixed(1) + ' ' + Y(w.kg).toFixed(1); }).join('') + '" fill="none" class="w-trend"/>';
+    L.forEach(function (w) { s += '<circle cx="' + X(w.day).toFixed(1) + '" cy="' + Y(w.kg).toFixed(1) + '" r="' + (L.length > 60 ? 1.8 : 3) + '" class="w-pt"/>'; });
+    for (var t = 0; t <= 4; t++) { var dd = addDays(from, Math.round(span * t / 4)); s += '<text x="' + X(dd).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + (t === 0 ? 'start' : t === 4 ? 'end' : 'middle') + '" class="ax">' + dm(dd) + '</text>'; }
+    return s + '</svg>';
   }
   function tile(a, b, c) { return '<div class="tile"><div class="eyebrow">' + esc(a) + '</div><div class="tv">' + esc(b) + '</div>' + (c ? '<div class="note">' + esc(c) + '</div>' : '') + '</div>'; }
   function pill(name, ok, total) {
@@ -1057,18 +1189,20 @@
     '3. Prüfe das Timing rund ums Training: Carbs und Eiweiß vor, während und nach den Einheiten (Mengen und Abstände), Tage vor harten oder langen Einheiten, Erholung nach dem Training.',
     '4. Suche Muster: Essenszeiten, lange Pausen zwischen Mahlzeiten, Verteilung von Eiweiß über den Tag, späte große Mahlzeiten, Wochentag-Unterschiede, Snacks, wiederkehrende Lebensmittel.',
     '5. Bewerte Lebensmittelqualität und Vielfalt (Gemüse, Obst, Farben, Ballaststoffe) und nenne Lücken.',
-    '6. Gib mir einen Plan für die nächste Woche: Zielwerte pro Tagestyp, Beispielmahlzeiten mit Zeiten und Mengen, Verbesserungen in kleinen Schritten.',
+    '6. Bewerte die Entwicklung des Körpergewichts (Abschnitt „Körpergewicht“, falls vorhanden) im Verhältnis zu Energiezufuhr, Trainingsumfang und Zielsetzung. Nutze den 7-Tage-Trend statt einzelner Tageswerte.',
+    '7. Gib mir einen Plan für die nächste Woche: Zielwerte pro Tagestyp, Beispielmahlzeiten mit Zeiten und Mengen, Verbesserungen in kleinen Schritten.',
     '',
     'Wichtige Hinweise zu den Daten:',
     '- Alle Nährwerte und Energiewerte sind Schätzungen aus einer Lebensmitteldatenbank und einem Rechenmodell. Der Trainingsverbrauch stammt aus kJ, aus der Beschreibung der Einheit, aus TSS mit FTP oder aus einer Schätzung (steht jeweils dabei).',
     '- Die Zuckerkurve ist ein Modell und kein Messwert. Nutze sie höchstens als grobe Orientierung.',
+    '- Körpergewicht: Tageswerte schwanken durch Wasser, Verdauung und Glykogen leicht um 0,5 bis 1,5 kg. Aussagekräftig sind Trends über mehrere Tage. Fehlen Gewichtswerte, nicht raten.',
     '- Tage ohne Einträge sind vermutlich nicht dokumentiert und keine Fastentage. Frage nach, wenn dir Informationen fehlen.',
     '- Keine Diagnosen und keine medizinischen Aussagen. Bei gesundheitlichen Fragen verweise auf Ärztin oder Arzt.',
     '- Antworte auf Deutsch, klar gegliedert, und belege Aussagen mit konkreten Tagen und Zahlen aus den Daten.'
   ].join('\n');
   function mdCell(v) { return String(v == null ? '' : v).replace(/\|/g, '/').replace(/\n/g, ' '); }
   function exportMd(model, from, to) {
-    var rows = analyze(model, from, to), p = model.profile, L = [], tdy = today();
+    var rows = analyze(model, from, to), p = model.profile, L = [], tdy = today(), ws = wSorted(model.weights, from, to);
     function ln(x) { L.push(x === undefined ? '' : x); }
     var withData = rows.filter(function (r) { return r.n || r.sess.length; });
     ln('# Tankplan-Export für KI-Analyse');
@@ -1099,17 +1233,32 @@
     ln();
     ln('## Übersicht pro Tag');
     ln();
-    ln('| Datum | Aktivitätsstufe | Training | Kalorien ist/soll | Carbs g ist/soll | Eiweiß g ist/soll | Fett g ist/soll | Gemüse g | Obst g | Mahlzeiten |');
-    ln('|---|---|---|---|---|---|---|---|---|---|');
+    ln('| Datum | Aktivitätsstufe | Training | Kalorien ist/soll | Carbs g ist/soll | Eiweiß g ist/soll | Fett g ist/soll | Ballaststoffe g | Gemüse g | Obst g | Gewicht kg | Mahlzeiten |');
+    ln('|---|---|---|---|---|---|---|---|---|---|---|---|');
     var sum = { k: 0, tk: 0, c: 0, tc: 0, p: 0, tp: 0, f: 0, tf: 0, veg: 0, fruit: 0, n: 0 };
     rows.forEach(function (r) {
       var tr = r.sess.length ? r.sess.map(function (x) { return x.type + ' ' + x.min + ' min ' + INT[x.lv]; }).join(' + ') : 'kein Training';
-      ln('| ' + r.day + ' | ' + r.t.lvl + ' | ' + mdCell(tr) + ' | ' + r0(r.st.k) + ' / ' + r.t.kcal + ' | ' + r0(r.st.c) + ' / ' + r.t.c + ' | ' + r0(r.st.p) + ' / ' + r.t.p + ' | ' + r0(r.st.f) + ' / ' + r.t.f + ' | ' + r0(r.st.veg) + ' | ' + r0(r.st.fruit) + ' | ' + r.groups.length + ' |');
+      ln('| ' + r.day + ' | ' + r.t.lvl + ' | ' + mdCell(tr) + ' | ' + r0(r.st.k) + ' / ' + r.t.kcal + ' | ' + r0(r.st.c) + ' / ' + r.t.c + ' | ' + r0(r.st.p) + ' / ' + r.t.p + ' | ' + r0(r.st.f) + ' / ' + r.t.f + ' | ' + r0(r.st.fi) + ' | ' + r0(r.st.veg) + ' | ' + r0(r.st.fruit) + ' | ' + (function () { var w = ws.filter(function (x) { return x.day === r.day; })[0]; return w ? de(w.kg, 1) : ''; })() + ' | ' + r.groups.length + ' |');
       if (r.n) { sum.n++; sum.k += r.st.k; sum.tk += r.t.kcal; sum.c += r.st.c; sum.tc += r.t.c; sum.p += r.st.p; sum.tp += r.t.p; sum.f += r.st.f; sum.tf += r.t.f; sum.veg += r.st.veg; sum.fruit += r.st.fruit; }
     });
     if (sum.n) {
       ln();
       ln('Durchschnitt der ' + sum.n + ' Tage mit Essenseinträgen: ' + r0(sum.k / sum.n) + ' kcal (Soll ' + r0(sum.tk / sum.n) + '), Carbs ' + r0(sum.c / sum.n) + ' g (Soll ' + r0(sum.tc / sum.n) + '), Eiweiß ' + r0(sum.p / sum.n) + ' g (Soll ' + r0(sum.tp / sum.n) + '), Fett ' + r0(sum.f / sum.n) + ' g (Soll ' + r0(sum.tf / sum.n) + '), Gemüse ' + r0(sum.veg / sum.n) + ' g, Obst ' + r0(sum.fruit / sum.n) + ' g pro Tag.');
+    }
+    var wst = weightStats(model.weights, from, to);
+    ln();
+    ln('## Körpergewicht');
+    ln();
+    if (!wst) ln('Im Zeitraum sind keine Gewichtswerte eingetragen.' + (p.w ? ' Profilgewicht: ' + p.w + ' kg.' : ''));
+    else {
+      ln('- Einträge: ' + wst.n + ' · erster Wert ' + de(wst.first.kg, 1) + ' kg (' + wst.first.day + '), letzter Wert ' + de(wst.last.kg, 1) + ' kg (' + wst.last.day + ')');
+      ln('- Veränderung im Zeitraum: ' + (wst.delta > 0 ? '+' : '') + de(wst.delta, 1) + ' kg · Durchschnitt ' + de(wst.avg, 1) + ' kg · niedrigster ' + de(wst.min, 1) + ' kg · höchster ' + de(wst.max, 1) + ' kg');
+      ln('- 7-Tage-Mittel am letzten Eintrag: ' + de(wst.trend, 1) + ' kg');
+      ln();
+      ln('| Datum | Gewicht kg | 7-Tage-Mittel kg |');
+      ln('|---|---|---|');
+      var allw = wSorted(model.weights);
+      ws.forEach(function (w) { ln('| ' + w.day + ' | ' + de(w.kg, 1) + ' | ' + de(wTrendAt(allw, w.day), 1) + ' |'); });
     }
     ln();
     ln('## Details pro Tag');
@@ -1162,11 +1311,12 @@
     return L.join('\n') + '\n';
   }
 
-  function toCsv(rows) {
-    var out = ['Datum;Ziel_Carbs_g;Carbs_g;Eiweiss_g;Fett_g;kcal;Gemuese_g;Obst_g;Training_min'];
+  function toCsv(rows, ws) {
+    var out = ['Datum;Ziel_Carbs_g;Carbs_g;Eiweiss_g;Fett_g;kcal;Gemuese_g;Obst_g;Training_min;Ballaststoffe_g;Gewicht_kg'];
     rows.forEach(function (r) {
-      if (!r.n && !r.trainMin) return;
-      out.push([r.day, r.t.c, r0(r.st.c), r0(r.st.p), r0(r.st.f), r0(r.st.k), r0(r.st.veg), r0(r.st.fruit), r.trainMin].join(';'));
+      var w = (ws || []).filter(function (x) { return x.day === r.day; })[0];
+      if (!r.n && !r.trainMin && !w) return;
+      out.push([r.day, r.t.c, r0(r.st.c), r0(r.st.p), r0(r.st.f), r0(r.st.k), r0(r.st.veg), r0(r.st.fruit), r.trainMin, r0(r.st.fi), w ? String(w.kg).replace('.', ',') : ''].join(';'));
     });
     return out.join('\n');
   }
@@ -1179,7 +1329,7 @@
     parseLine: parseLine, dayStats: dayStats, ampel: ampel, analyze: analyze,
     DEF_MT: DEF_MT, KINDS: KINDS, tmin: tmin, tfmt: tfmt, hmText: hmText, trainWin: trainWin, guessKind: guessKind, mealPlan: mealPlan, matchMeals: matchMeals, relLabel: relLabel, fuelCheck: fuelCheck,
     glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
-    reportHtml: reportHtml, dayListHtml: dayListHtml, toCsv: toCsv, chartSvg: chartSvg
+    reportHtml: reportHtml, reportParts: reportParts, METRICS: METRICS, trendChartSvg: trendChartSvg, trendTableHtml: trendTableHtml, trendDayHtml: trendDayHtml, wSorted: wSorted, weightStats: weightStats, weightChartSvg: weightChartSvg, wTrendAt: wTrendAt, dayListHtml: dayListHtml, toCsv: toCsv, chartSvg: chartSvg
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   root.TP = API;

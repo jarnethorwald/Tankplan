@@ -246,3 +246,53 @@ svg .bd{opacity:.85}
 .sess .d2 .f { display: grid; gap: 3px; font-size: 11px; color: var(--muted); font-weight: 600; }
 .plan-workout .d2 { align-items: flex-end; }
 .plan-workout .d2 .f { display: grid; gap: 3px; font-size: 11px; color: var(--muted); font-weight: 600; }
+
+/* Soll / Ist */
+.slot-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.si { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.si.one { grid-template-columns: 1fr; }
+.si-col { border-radius: 12px; padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.si-col.soll { background: var(--bg); border: 1.5px dashed var(--muted); }
+.si-col.ist { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); border: 1.5px solid var(--accent); }
+.si-h { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-weight: 800; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.si-col.soll .si-h { color: var(--muted); } .si-col.ist .si-h { color: var(--accent); }
+.si-h b { font-family: var(--f-data); font-size: 14px; letter-spacing: 0; text-transform: none; color: var(--ink); }
+.si-pie { justify-self: center; }
+.si-l { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.si-l li { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.si-l li > span { white-space: nowrap; }
+.si-l b { font-family: var(--f-data); font-weight: 600; font-size: 12.5px; text-align: right; }
+.si-l i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.si-k { border-top: 1px solid var(--line); padding-top: 4px; margin-top: 2px; color: var(--muted); }
+.si-empty { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
+/* Plan-Editor */
+.plan-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.plan-edit .plan-metric input, .plan-edit .plan-metric select { padding: 7px 8px; font-size: 14px; width: 100%; }
+.plan-edit .plan-metric-hint { grid-column: 1 / -1; }
+/* Auswertung */
+.vchart { width: 100%; height: auto; display: block; }
+svg .t100 { stroke: var(--ink); stroke-width: 1.2; stroke-dasharray: 4 3; }
+svg .selband { fill: var(--accent); opacity: .12; }
+svg .w-raw { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+svg .w-trend { stroke: var(--accent); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+svg .w-pt { fill: var(--surface); stroke: var(--ink); stroke-width: 1.5; }
+.mchip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 7px 11px; font-size: 13px; font-weight: 500; }
+.mchip[aria-pressed="true"] { background: color-mix(in srgb, var(--ink) 9%, var(--surface)); border-color: var(--ink); font-weight: 700; }
+.mchip[aria-pressed="false"] .sw { opacity: .35; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.mchip .sw { margin-right: 0; }
+.ttab { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+.ttab th { text-align: right; font-weight: 600; color: var(--muted); padding: 4px 6px; }
+.ttab td { padding: 5px 6px; border-top: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; }
+.ttab td:first-child { text-align: left; }
+.dayrd { margin-top: 10px; background: color-mix(in srgb, var(--accent) 8%, var(--surface)); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.lg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--ink); background: var(--surface); vertical-align: -1px; }
+.lg-line { display: inline-block; width: 18px; height: 0; border-top: 3px solid var(--accent); vertical-align: 3px; }
+#wcard .tiles { margin-top: 4px; }
+
+.si-l b em { display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); }
+.si-l li { align-items: flex-start; }
+#wcard .item span:last-child { color: var(--ink); }
+
+.res.off button { flex-wrap: wrap; gap: 2px 10px; }
+.res.off button span { flex-basis: 100%; white-space: normal; }

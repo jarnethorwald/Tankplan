@@ -5,7 +5,7 @@
   var esc = T.esc, de = T.de, r0 = T.r0;
 
   function blank() {
-    return { profile: { w: 72, h: 178, a: 34, sex: 'm', goal: 'keep', mt: {}, lvls: {}, lib: [], sets: [] }, profileU: 0, plan: [], acts: [], meals: [], custom: [], del: [],
+    return { profile: { w: 72, h: 178, a: 34, sex: 'm', goal: 'keep', mt: {}, lvls: {}, lib: [], sets: [] }, profileU: 0, plan: [], acts: [], meals: [], weights: [], custom: [], del: [],
       cfg: { iid: '0', ikey: '', token: '', ilast: 0, istat: '' }, auth: null, last: 0 };
   }
   function fixProfile(p) {
@@ -32,13 +32,18 @@
   var barcode = { active: false, busy: false, msg: '' }, barcodeScanner = null, barcodeStartPromise = null, barcodeScriptPromise = null;
   var UIKEY = 'tankplan.ui';
   var mealShow = (function () { try { var u = JSON.parse(localStorage.getItem(UIKEY)); if (u && (u.soll || u.ist)) return { soll: !!u.soll, ist: !!u.ist }; } catch (e) {} return { soll: true, ist: true }; })();
-  var doneEdit = null, planDone = false;
+  var doneEdit = null, planDone = false, editOpen = {};
+  var UI2 = 'tankplan.ui2';
+  var trend = (function () { try { var u = JSON.parse(localStorage.getItem(UI2)); if (u && Array.isArray(u.keys) && u.keys.length) return { keys: u.keys.filter(function (k) { return T.METRICS.some(function (m) { return m.k === k; }); }), mode: u.mode === 'abs' ? 'abs' : 'pct' }; } catch (e) {} return { keys: ['c', 'p', 'f'], mode: 'pct' }; })();
+  if (!trend.keys.length) trend.keys = ['c', 'p', 'f'];
+  function saveTrend() { try { localStorage.setItem(UI2, JSON.stringify(trend)); } catch (e) {} }
+  var chartSel = null, wDay = T.today(), wInput = null;
   var KIND_ORDER = ['frueh', 'mittag', 'abend', 'snack', 'pre', 'during', 'post'];
 
   function uid() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'x' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
   function persist() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
   function save() { persist(); schedSync(); }
-  function model() { return { profile: S.profile, plan: S.plan, acts: S.acts, meals: S.meals, today: T.today() }; }
+  function model() { return { profile: S.profile, plan: S.plan, acts: S.acts, meals: S.meals, weights: S.weights, today: T.today() }; }
   function nowHM() { return new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }); }
   function flash(msg) {
     banner = msg; render(); clearTimeout(flash.t);
@@ -95,6 +100,12 @@
     Object.keys(COLS).forEach(function (tbl) {
       post(tbl, S[tbl].filter(function (r) { return (r.u || 0) > since; }).map(function (r) { return pick(r, COLS[tbl]); }), 'user_id,id');
     });
+    var keepDel = [];
+    var wrows = S.weights.filter(function (r) { return (r.u || 0) > (S.wFail ? 0 : since); }).map(function (r) { return pick(r, ['id', 'day', 'kg']); });
+    if (wrows.length) chain = chain.then(function () {
+      return SB.rest('weights?on_conflict=user_id,id', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(wrows) })
+        .then(function () { S.wFail = false; }).catch(function () { S.wFail = true; });
+    });
     post('custom', S.custom.filter(function (r) { return (r.u || 0) > since; }).map(function (r) { return { id: r.id, data: r }; }), 'user_id,id');
     if ((S.profileU || 0) > since) post('profile', [{ data: S.profile }], 'user_id');
     if (S.cfg.token && (S.cfg.tokenU || 0) > since) post('shares', [{ token: S.cfg.token }], 'user_id');
@@ -103,8 +114,10 @@
       var ids = dels.filter(function (d) { return d.t === tbl; }).map(function (d) { return d.id; });
       if (ids.length) chain = chain.then(function () { return SB.rest(tbl + '?id=in.(' + ids.join(',') + ')', { method: 'DELETE' }); });
     });
+    var wd = dels.filter(function (d) { return d.t === 'weights'; }).map(function (d) { return d.id; });
+    if (wd.length) chain = chain.then(function () { return SB.rest('weights?id=in.(' + wd.join(',') + ')', { method: 'DELETE' }); }).catch(function () { dels.forEach(function (d) { if (d.t === 'weights') keepDel.push(d); }); });
     return chain.then(function () {
-      S.last = start; S.del = S.del.filter(function (d) { return dels.indexOf(d) < 0; }); persist(); busy = false; return true;
+      S.last = start; S.del = S.del.filter(function (d) { return dels.indexOf(d) < 0 || keepDel.indexOf(d) >= 0; }); persist(); busy = false; return true;
     }).catch(function (e) { busy = false; throw e; });
   }
   function schedSync() {
@@ -119,6 +132,10 @@
         rows.forEach(function (x) { if (!have[x.id]) { delete x.user_id; x.u = Date.now(); S[tbl].push(x); } });
       });
     });
+    tasks.push(SB.rest('weights?select=*&limit=5000').then(function (r) { return r.json(); }).then(function (rows) {
+      var have = {}; S.weights.forEach(function (x) { have[x.id] = 1; });
+      (Array.isArray(rows) ? rows : []).forEach(function (x) { if (!have[x.id]) { delete x.user_id; x.kg = +x.kg; x.u = Date.now(); S.weights.push(x); } });
+    }).catch(function () {}));
     tasks.push(SB.rest('custom?select=*').then(function (r) { return r.json(); }).then(function (rows) {
       var have = {}; S.custom.forEach(function (x) { have[x.id] = 1; });
       rows.forEach(function (x) { if (!have[x.id] && x.data) { x.data.id = x.id; S.custom.push(x.data); } });
@@ -179,6 +196,57 @@
   }
 
   /* ---------- Open Food Facts ---------- */
+  var off = { q: '', busy: false, res: [], msg: '' };
+  /* Produkt von Open Food Facts in ein Tankplan-Lebensmittel (je 100 g) umrechnen */
+  function offToFood(p, code) {
+    if (!p) return null;
+    var n = p.nutriments || {}, name = String(p.product_name_de || p.product_name || '').trim();
+    var k = n['energy-kcal_100g'] != null ? +n['energy-kcal_100g'] : (n.energy_100g != null ? +n.energy_100g / 4.184 : null);
+    if (!name || k === null || !isFinite(k)) return null;
+    var brand = p.brands ? String(p.brands).split(',')[0].trim() : '';
+    var sq = +p.serving_quantity;
+    return { id: uid(), ean: String(code || p.code || ''), n: name + (brand && name.toLowerCase().indexOf(brand.toLowerCase()) < 0 ? ' (' + brand + ')' : ''), k: Math.max(0, k),
+      c: +n.carbohydrates_100g || 0, p: +n.proteins_100g || 0, f: +n.fat_100g || 0, fi: +n.fiber_100g || 0, gr: '', co: '', v: '', pn: 'Portion', pg: sq > 0 && sq < 2000 ? sq : 100, u: Date.now() };
+  }
+  /* In die eigene Lebensmittelliste übernehmen (merkt sich Strichcode, vermeidet Doppelte) */
+  function addOffFood(f) {
+    var ex = f.ean ? S.custom.filter(function (x) { return x.ean === f.ean; })[0] : null;
+    if (ex) return ex;
+    S.custom.push(f); save(); return f;
+  }
+  function offSearch(term) {
+    off = { q: term, busy: true, res: [], msg: '' };
+    var ctl = window.AbortController ? new AbortController() : null, to = setTimeout(function () { if (ctl) ctl.abort(); }, 15000);
+    var url = 'https://world.openfoodfacts.org/cgi/search.pl?search_terms=' + encodeURIComponent(term) + '&search_simple=1&action=process&json=1&page_size=30&sort_by=unique_scans_n' +
+      '&tagtype_0=countries&tag_contains_0=contains&tag_0=germany&fields=code,product_name,product_name_de,brands,nutriments,serving_quantity';
+    return fetch(url, ctl ? { signal: ctl.signal } : {}).then(function (r) { if (!r.ok) throw new Error('Open Food Facts antwortet mit ' + r.status + '.'); return r.json(); })
+      .then(function (j) {
+        clearTimeout(to);
+        var seen = {}, list = [];
+        (j.products || []).forEach(function (p) {
+          var f = offToFood(p); if (!f) return;
+          var key = f.n.toLowerCase() + '|' + r0(f.k); if (seen[key]) return; seen[key] = 1; list.push(f);
+        });
+        off.busy = false; off.res = list; off.msg = list.length ? '' : 'Bei Open Food Facts nichts Passendes für Deutschland gefunden.';
+      }).catch(function (e) {
+        clearTimeout(to); off.busy = false;
+        off.msg = e && e.name === 'AbortError' ? 'Open Food Facts antwortet zu langsam. Bitte später noch einmal versuchen.' : 'Suche bei Open Food Facts nicht möglich (' + (e && e.message ? e.message : 'keine Verbindung') + ').';
+      });
+  }
+  function offHtml() {
+    var term = q.trim();
+    if (term.length < 3) return '';
+    var h = '';
+    if (off.busy && off.q === term) return '<p class="note">Suche bei Open Food Facts …</p>';
+    if (off.q === term && off.res.length) {
+      h += '<div class="eyebrow" style="margin:12px 0 4px">Open Food Facts · Deutschland (' + off.res.length + ')</div><div class="res off">' + off.res.map(function (f, i) {
+        return '<button data-a="offpick" data-i="' + i + '">' + esc(f.n) + '<span>' + r0(f.k) + ' kcal · ' + de(f.c, 1) + ' C · ' + de(f.p, 1) + ' P · ' + de(f.f, 1) + ' F</span></button>';
+      }).join('') + '</div><p class="note">Werte je 100 g laut Hersteller-Angaben in der Open-Food-Facts-Datenbank (von Nutzern gepflegt, kann Fehler enthalten). Was du auswählst, wird in deiner Lebensmittelliste gespeichert und ist danach auch offline suchbar.</p>';
+      return h;
+    }
+    if (off.q === term && off.msg) h += '<p class="note">' + esc(off.msg) + '</p>';
+    return h + '<button type="button" class="btn ghost full" data-a="offsearch">„' + esc(term) + '“ in Open Food Facts suchen (Deutschland)</button>';
+  }
   function lookupEan(ean) {
     ean = String(ean).replace(/\D/g, '');
     if (ean.length < 8) return Promise.reject(new Error('Der erkannte Strichcode ist ungültig. Bitte erneut scannen.'));
@@ -186,11 +254,9 @@
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (j.status !== 1 || !j.product) throw new Error('Produkt nicht gefunden.');
-        var p = j.product, n = p.nutriments || {};
-        var k = n['energy-kcal_100g'] != null ? +n['energy-kcal_100g'] : (n.energy_100g ? +n.energy_100g / 4.184 : 0);
-        var f = { id: uid(), n: (p.product_name || 'Produkt') + (p.brands ? ' (' + String(p.brands).split(',')[0] + ')' : ''), k: k, c: +n.carbohydrates_100g || 0, p: +n.proteins_100g || 0, f: +n.fat_100g || 0, fi: +n.fiber_100g || 0, gr: '', co: '', v: '', pn: 'Portion', pg: +p.serving_quantity || 100, u: Date.now() };
-        S.custom.push(f); save();
-        return f;
+        var f = offToFood(j.product, ean) || offToFood(Object.assign({ product_name: 'Produkt' }, j.product), ean);
+        if (!f) throw new Error('Für dieses Produkt gibt es keine Nährwerte.');
+        return addOffFood(f);
       });
   }
 
@@ -331,12 +397,21 @@
     return '<div class="items">' + it.map(function (m) { return '<div class="item"><span>' + esc(m.t || '') + ' ' + esc(m.name) + '</span><span>' + r0(m.c) + ' C</span></div>'; }).join('') + '</div>';
   }
   function pieBox(c, p, f, cap) { return '<div class="pie-box">' + T.pieSvg(c, p, f, 48) + '<div class="pie-cap">' + cap + '<br>' + esc(T.pieCaption(c, p, f)) + '</div></div>'; }
+  function macroLines(c, p, f, extra, pcts) {
+    var k = 4 * c + 4 * p + 9 * f, pc = function (v, m) { return pcts && k > 0 ? '<em>' + r0(m * v / k * 100) + ' % der kcal</em>' : ''; };
+    return '<ul class="si-l"><li><span><i class="lc"></i>Carbs</span><b>' + r0(c) + ' g' + pc(c, 4) + '</b></li><li><span><i class="lp"></i>Eiweiß</span><b>' + r0(p) + ' g' + pc(p, 4) + '</b></li><li><span><i class="lf"></i>Fett</span><b>' + r0(f) + ' g' + pc(f, 9) + '</b></li>' + (extra || '') + '</ul>';
+  }
+  function siCol(kind, head, time, c, p, f, extra, empty, pcts) {
+    return '<div class="si-col ' + kind + '"><div class="si-h">' + head + (time ? ' <b>' + esc(time) + '</b>' : '') + '</div>' +
+      (empty ? '<div class="si-empty">' + empty + '</div>' : '<div class="si-pie">' + T.pieSvg(c, p, f, 64) + '</div>' + macroLines(c, p, f, extra, pcts)) + '</div>';
+  }
   function slotHtml(ms, nowMin) {
-    var s = ms.s, it = ms.items, sh = mealShow, e = sumMacros(it), ec = e.c;
-    var macros = s.kind === 'during' ? r0(s.c) + ' g Carbs' : r0(s.c) + ' C · ' + r0(s.p) + ' P · ' + r0(s.f) + ' F';
-    var vf = [];
-    if (s.veg >= 20) vf.push('Gemüse ca. ' + (Math.round(s.veg / 10) * 10) + ' g');
-    if (s.fruit >= 20) vf.push('Obst ca. ' + (Math.round(s.fruit / 10) * 10) + ' g');
+    var s = ms.s, it = ms.items, sh = mealShow, e = sumMacros(it), est = T.dayStats(it), ec = e.c;
+    var during = s.kind === 'during';
+    var vf = '';
+    if (s.veg >= 20) vf += '<li><span>Gemüse</span><b>ca. ' + (Math.round(s.veg / 10) * 10) + ' g</b></li>';
+    if (s.fruit >= 20) vf += '<li><span>Obst</span><b>ca. ' + (Math.round(s.fruit / 10) * 10) + ' g</b></li>';
+    var vfI = (est.veg >= 1 ? '<li><span>Gemüse</span><b>' + r0(est.veg) + ' g</b></li>' : '') + (est.fruit >= 1 ? '<li><span>Obst</span><b>' + r0(est.fruit) + ' g</b></li>' : '');
     var btn = '<button class="btn ghost sm" data-a="logslot" data-k="' + s.kind + '" data-tm="' + esc(it.length && sh.ist && !sh.soll ? firstTime(it) || s.time : s.time) + '">' + (it.length ? 'Mehr eintragen' : 'Eintragen') + '</button>';
     var pill = '';
     if (sh.soll && sh.ist) {
@@ -344,26 +419,14 @@
       else if (it.length) pill = '<span class="pill ok"><i></i>erledigt</span>';
       else pill = '<span class="pill"><i></i>' + (nowMin !== null && s.at + 90 < nowMin ? 'verpasst' : 'offen') + '</span>';
     }
-    /* Nur Ist: tatsächliche Uhrzeit und Verteilung, nichts anzeigen, wenn nichts gegessen wurde */
-    if (!sh.soll) {
-      if (!it.length) return '';
-      var tmI = firstTime(it);
-      return '<article class="card slot"><div class="slot-top"><span class="clock">' + esc(tmI || '–') + '</span><div class="slot-main"><div class="slot-title">' + esc(s.label) + '</div>' +
-        '<div class="slot-sub">' + (s.kind === 'during' ? r0(e.c) + ' g Carbs' : r0(e.c) + ' C · ' + r0(e.p) + ' P · ' + r0(e.f) + ' F') + '</div></div>' + pieBox(e.c, e.p, e.f, 'Ist') + '</div>' +
-        itemsHtml(it) + btn + '</article>';
-    }
-    /* Nur Soll oder beides */
-    var pies = pieBox(s.c, s.p, s.f, 'Soll');
-    var two = sh.ist && it.length;
-    if (two) pies += pieBox(e.c, e.p, e.f, 'Ist');
-    var h = '<article class="card slot"><div class="slot-top"><span class="clock">' + esc(s.time) + '</span><div class="slot-main"><div class="slot-title">' + esc(s.label) + '</div>' +
-      '<div class="slot-sub">' + (sh.ist ? 'Soll: ' : '') + macros + (vf.length ? ' · ' + vf.join(' · ') : '') + '</div>' +
-      (s.rel ? '<div class="slot-sub">' + esc(s.rel) + (s.assumed ? ' (Uhrzeit angenommen)' : '') + '</div>' : '') +
-      (sh.ist && it.length ? '<div class="slot-sub">Ist: ' + esc(firstTime(it) || '–') + ' Uhr · ' + (s.kind === 'during' ? r0(e.c) + ' g Carbs' : r0(e.c) + ' C · ' + r0(e.p) + ' P · ' + r0(e.f) + ' F') + '</div>' : '') +
-      (pill ? '<div style="margin-top:6px">' + pill + '</div>' : '') + '</div>' + (two ? '' : pies) + '</div>' + (two ? '<div class="pies-row">' + pies + '</div>' : '') +
-      '<p class="note">' + esc(s.focus) + '</p>';
-    if (sh.ist && it.length) h += itemsHtml(it);
-    return h + btn + '</article>';
+    if (!sh.soll && !it.length) return '';
+    var cols = '';
+    if (sh.soll) cols += siCol('soll', 'Soll', s.time, s.c, s.p, s.f, vf, '', false);
+    if (sh.ist) cols += siCol('ist', 'Ist', firstTime(it), e.c, e.p, e.f, vfI, it.length ? '' : 'Noch nichts gegessen', false);
+    return '<article class="card slot"><div class="slot-head"><div class="slot-title">' + esc(s.label) + '</div>' + pill + '</div>' +
+      (sh.soll && s.rel ? '<div class="slot-sub">' + esc(s.rel) + (s.assumed ? ' (Uhrzeit angenommen)' : '') + '</div>' : '') +
+      '<div class="si' + (sh.soll && sh.ist ? '' : ' one') + '">' + cols + '</div>' +
+      (sh.soll ? '<p class="note">' + esc(s.focus) + '</p>' : '') + (sh.ist && it.length ? itemsHtml(it) : '') + btn + '</article>';
   }
   function mealToggleHtml() {
     return '<div class="seg mealtog" role="group" aria-label="Anzeige Soll und Ist">' +
@@ -399,14 +462,10 @@
     var fibNeed = Math.max(30, r0(14 * t.kcal / 1000));
     h += '<section class="card">' + macroRow('Kohlenhydrate', st.c, t.c, 'var(--carb)') + macroRow('Eiweiß', st.p, t.p, 'var(--prot)') + macroRow('Fett', st.f, t.f, 'var(--fat)') + macroRow('Ballaststoffe', st.fi, fibNeed, 'var(--accent)') +
       '<p class="note" style="margin:6px 0 0">Ballaststoffe: ' + r0(st.fi) + ' g gegessen, Richtwert ' + fibNeed + ' g (mindestens 30 g, bei hohem Kalorienziel 14 g je 1000 kcal). ' + (st.fi >= fibNeed ? 'Erreicht.' : 'Noch ' + (fibNeed - r0(st.fi)) + ' g offen.') + ' Vor und während harten Einheiten lieber wenig Ballaststoffe, dafür mehr über den Tag verteilt.</p></section>';
-    var pk = function (c, p, f) { var k = 4 * c + 4 * p + 9 * f; return k > 0 ? [r0(4 * c / k * 100), r0(4 * p / k * 100), r0(9 * f / k * 100)] : [0, 0, 0]; };
-    var pl = pk(t.c, t.p, t.f), pa = pk(st.c, st.p, st.f);
-    h += '<section class="card"><div class="eyebrow" style="margin-bottom:8px">Makroverteilung · Soll &amp; Ist</div><div class="pies">' +
-      [['Soll', t.c, t.p, t.f, pl, t.kcal], ['Ist', st.c, st.p, st.f, pa, r0(st.k)]].map(function (x) {
-        var has = x[1] + x[2] + x[3] > 0;
-        return '<div class="pie2"><div class="pie2-h">' + x[0] + '</div>' + T.pieSvg(x[1], x[2], x[3], 110) +
-          (has ? '<ul class="pie2-l"><li><i class="lc"></i>Carbs ' + r0(x[1]) + ' g · ' + x[4][0] + ' %</li><li><i class="lp"></i>Eiweiß ' + r0(x[2]) + ' g · ' + x[4][1] + ' %</li><li><i class="lf"></i>Fett ' + r0(x[3]) + ' g · ' + x[4][2] + ' %</li><li class="pie2-k">' + r0(x[5]) + ' kcal</li></ul>' : '<p class="note">Noch nichts gegessen.</p>') + '</div>';
-      }).join('') + '</div><p class="note" style="margin:8px 0 0">Anteile an den Kalorien: Carbs und Eiweiß 4 kcal je g, Fett 9 kcal je g.</p></section>';
+    h += '<section class="card"><div class="eyebrow" style="margin-bottom:8px">Makroverteilung · Soll &amp; Ist</div><div class="si">' +
+      siCol('soll', 'Soll', '', t.c, t.p, t.f, '<li class="si-k"><span>Energie</span><b>' + t.kcal + ' kcal</b></li>', '', true) +
+      siCol('ist', 'Ist', '', st.c, st.p, st.f, '<li class="si-k"><span>Energie</span><b>' + r0(st.k) + ' kcal</b></li>', r.n ? '' : 'Noch nichts gegessen', true) +
+      '</div><p class="note" style="margin:8px 0 0">Anteile an den Kalorien: Carbs und Eiweiß 4 kcal je g, Fett 9 kcal je g.</p></section>';
     if (t.pct) h += '<p class="note">Makroverteilung: ' + t.pct.c + ' % Carbs · ' + t.pct.p + ' % Eiweiß · ' + t.pct.f + ' % Fett der Kalorien.</p>';
     h += '<section class="card"><div class="eyebrow" style="margin-bottom:6px">Essens-Timing · Soll &amp; Gegessen</div>' + T.dayChartHtml(r) + '</section>';
     if (cur <= T.today()) h += '<section class="card"><div class="eyebrow" style="margin-bottom:6px">Tagesauswertung</div>' + T.reviewHtml(T.dayReview(r, nowMin)) + '</section>';
@@ -419,7 +478,7 @@
         '<div class="sess-sub">' + (s.tm ? esc(s.tm) + ' Uhr · ' : '') + esc(s.type) + ' · ' + T.INT[s.lv] + ' · ' + s.min + ' min · ca. ' + r0(x.kcal) + ' kcal' + (x.tss ? ' · ' + r0(x.tss) + ' TSS' : '') + (done ? '' : ' (' + x.basis + ')') + '</div></div>' +
         (!done && s.id ? '<button class="x" data-a="delplan" data-id="' + s.id + '" aria-label="Einheit löschen">×</button>' : '') +
         (done && s.man ? '<button class="x" data-a="delact" data-id="' + esc(s.id) + '" aria-label="Eingetragene Einheit löschen">×</button>' : '') + '</div>' +
-        (canDone ? doneForm(s.id, s.tm || (cur === T.today() ? nowHM() : ''), s.min) : '') + '</article>';
+        (canDone ? doneForm(s.id, s.tm || (cur === T.today() ? nowHM() : ''), s.min) : '') + (!done && s.id ? planEditDetails(s.id) : '') + '</article>';
     });
     (r.sess.dropped || []).forEach(function (p) {
       h += '<article class="card sess"><div class="sess-top"><div><div class="sess-title">' + esc(p.title || p.type) + '<span class="tag">nicht eingetragen</span></div>' +
@@ -455,6 +514,21 @@
     var info = T.sessInfo({ type: it.type, min: min, lv: it.lv, tss: it.tss, kj: it.kj, desc: it.descr, title: it.title }, S.profile), id = 'man_' + uid();
     return { id: id, ext: id, day: it.day, type: it.type, name: it.title || it.type, min: min, tm: tm || null,
       kcal: /^Schätzung/.test(info.basis) ? null : r0(info.kcal), load: info.tss ? r0(info.tss) : null, lv: info.lv, net: true, u: Date.now() };
+  }
+  function planEditHtml(id) {
+    var p = S.plan.filter(function (x) { return x.id === id; })[0];
+    if (!p) return '';
+    var at = function (m) { return ' data-plan-id="' + esc(id) + '" data-plan-metric="' + m + '"'; };
+    return '<div class="plan-edit"><label class="plan-metric">Datum<input type="date"' + at('day') + ' value="' + esc(p.day) + '"></label>' +
+      '<label class="plan-metric">Uhrzeit<input type="time"' + at('tm') + ' value="' + esc(p.tm || '') + '"></label>' +
+      '<label class="plan-metric">Dauer (min)<input type="number" inputmode="numeric" min="5" max="900" step="1"' + at('min') + ' value="' + (p.min || '') + '"></label>' +
+      '<label class="plan-metric">Intensität<select' + at('lv') + '>' + [0, 1, 2].map(function (i) { return '<option value="' + i + '"' + ((+p.lv || 0) === i ? ' selected' : '') + '>' + T.INT[i] + '</option>'; }).join('') + '</select></label>' +
+      '<label class="plan-metric">TSS<input type="number" inputmode="decimal" min="1" max="1000" step="1"' + at('tss') + ' placeholder="TSS" value="' + (p.tss ? esc(p.tss) : '') + '"></label>' +
+      '<label class="plan-metric">kJ<input type="number" inputmode="decimal" min="1" max="10000" step="1"' + at('kj') + ' placeholder="kJ" value="' + (p.kj ? esc(p.kj) : '') + '"></label>' +
+      '<span class="plan-metric-hint">Jede Änderung wird direkt gespeichert. Vorrang beim Energiebedarf: kJ, dann Beschreibung, dann TSS, dann Intensität. Intensität zählt nur, wenn TSS und Beschreibung fehlen. 1 kJ ≈ 1 kcal.</span></div>';
+  }
+  function planEditDetails(id) {
+    return '<details class="plan-desc plan-editd" data-eid="' + esc(id) + '"' + (editOpen[id] ? ' open' : '') + '><summary>Anpassen: Uhrzeit, Dauer, TSS, kJ</summary>' + planEditHtml(id) + '</details>';
   }
   function libFind(title) {
     var t = String(title || '').trim().toLowerCase(); if (!t) return null;
@@ -521,7 +595,7 @@
         var displayTitle = (s.title || s.type).replace(/\b\d+(?:[.,]\d+)?\s*(?:min|minuten|h|std|stunden?)\b/ig, ' ').replace(/\s{2,}/g, ' ').trim() || s.type;
         h += '<div class="plan-workout"><div class="plan-workout-head"><span class="plan-workout-name">' + (s.tm ? esc(s.tm) + ' · ' : '') + esc(displayTitle) + '<span class="tag ' + (s.src === 'act' ? 'done' : '') + '">' + (s.src === 'act' ? 'absolviert' : 'geplant') + '</span></span>' +
           (s.src === 'plan' ? '<button class="x" data-a="delplan" data-id="' + esc(s.id) + '" aria-label="Löschen">×</button>' : '') + (s.man ? '<button class="x" data-a="delact" data-id="' + esc(s.id) + '" aria-label="Eingetragene Einheit löschen">×</button>' : '') + '<span class="plan-workout-summary">' + summary + '</span></div>';
-        if (s.src === 'plan') h += '<div class="plan-metrics"><label class="plan-metric">Geplante TSS<input type="number" inputmode="decimal" min="1" max="1000" step="1" data-plan-id="' + esc(s.id) + '" data-plan-metric="tss" aria-label="Geplante TSS für ' + esc(displayTitle) + '" placeholder="TSS" value="' + (s.tss ? esc(s.tss) : '') + '"></label><label class="plan-metric">Geplante kJ<input type="number" inputmode="decimal" min="1" max="10000" step="1" data-plan-id="' + esc(s.id) + '" data-plan-metric="kj" aria-label="Geplante kJ für ' + esc(displayTitle) + '" placeholder="kJ" value="' + (s.kj ? esc(s.kj) : '') + '"></label><span class="plan-metric-hint">Änderung direkt gespeichert · 1 kJ ≈ 1 kcal</span></div>';
+        if (s.src === 'plan') h += planEditDetails(s.id);
         if (s.src === 'plan') h += '<details class="plan-desc"><summary>TP-Beschreibung' + (s.desc ? ' (hinterlegt)' : ' hinzufügen') + '</summary><textarea data-plan-id="' + esc(s.id) + '" data-plan-metric="desc" rows="5" aria-label="TP-Beschreibung" placeholder="Beschreibung aus TrainingPeaks einfügen">' + esc(s.desc || '') + '</textarea>' + (si.desc ? '<div class="note">' + esc(descSummary(si.desc)) + '</div>' : '') + '</details>';
         if (s.src === 'plan' && r.day === tdy) h += doneForm(s.id, s.tm || nowHM(), s.min);
         h += '</div>';
@@ -543,11 +617,11 @@
   function resultsHtml() {
     var list = q.trim() ? T.searchFoods(allFoods(), q, 25) : recents();
     var sh = setsHtml();
-    if (!list.length) return sh + (q.trim() ? (sh ? '' : '<div class="empty">Nichts gefunden. Du kannst das Lebensmittel unten selbst anlegen oder den Strichcode scannen.</div>') : '');
+    if (!list.length) return sh + (q.trim() ? (sh ? '' : '<div class="empty">Im eigenen Bestand nichts gefunden. Suche unten in Open Food Facts, lege das Lebensmittel selbst an oder scanne den Strichcode.</div>') + offHtml() : '');
     var head = q.trim() ? (sh ? '<div class="eyebrow" style="margin:10px 0 4px">Lebensmittel</div>' : '') : '<div class="eyebrow" style="margin:10px 0 4px">Zuletzt gegessen</div>';
     return sh + head + '<div class="res">' + list.map(function (f) {
       return '<button data-a="pick" data-n="' + esc(f.n) + '">' + esc(f.n) + '<span>' + r0(f.k) + ' kcal · ' + de(f.c, 1) + ' C</span></button>';
-    }).join('') + '</div>';
+    }).join('') + '</div>' + (q.trim() ? offHtml() : '');
   }
   function selPreview() {
     if (!sel) return '';
@@ -565,7 +639,7 @@
       h += '<p class="note scanner-status" role="status">' + esc(barcode.msg || 'Produkt wird gesucht …') + '</p>';
     } else {
       h += '<button class="btn barcode-start" data-a="barcodeStart">Barcode mit Kamera scannen</button>' +
-        '<p class="note">Benötigt Internet und Kamerazugriff. Auf Netlify funktioniert die Kamera über HTTPS.</p>';
+        '<p class="note">Benötigt Internet und Kamerazugriff. Die Kamera funktioniert nur über eine HTTPS-Adresse, was bei GitHub Pages der Fall ist.</p>';
     }
     if (eanMsg) h += '<p class="note scanner-error" role="status">' + esc(eanMsg) + '</p>';
     return h + '</section>';
@@ -607,14 +681,59 @@
     return h;
   }
 
+  var RANGES = [[7, '7 T'], [14, '14 T'], [30, '30 T'], [90, '90 T'], [180, '180 T'], [365, '1 Jahr']];
+  function effKeys() {
+    var ks = trend.keys.slice();
+    if (trend.mode === 'abs' && ks.length > 1) { var w = ks.filter(function (k) { return k !== 'kcal'; }); if (w.length) ks = w; }
+    return ks;
+  }
+  function trendCard(rows) {
+    var keys = effKeys(), fi0 = 0;
+    for (var qi = 0; qi < rows.length; qi++) { if (rows[qi].n > 0) { fi0 = qi; break; } }
+    var rowsC = rows.slice(Math.min(fi0, Math.max(0, rows.length - 7))), svg = T.trendChartSvg(rowsC, keys, trend.mode, chartSel);
+    var h = '<section class="card"><div class="eyebrow" style="margin-bottom:8px">Verlauf pro Tag</div>' +
+      '<div class="chips" role="group" aria-label="Werte auswählen">' + T.METRICS.map(function (m) {
+        return '<button type="button" class="mchip" data-a="metric" data-k="' + m.k + '" aria-pressed="' + (trend.keys.indexOf(m.k) >= 0) + '"><span class="sw" style="background:' + m.col + '"></span>' + esc(m.s) + '</button>';
+      }).join('') + '</div>' +
+      '<div class="chips" style="margin-top:8px"><button type="button" class="chip" data-a="mpreset" data-k="macros">Nur Makros</button><button type="button" class="chip" data-a="mpreset" data-k="all">Alles außer Kalorien</button></div>' +
+      '<div class="seg" role="group" aria-label="Darstellung" style="margin:10px 0 8px">' + [['pct', '% vom Ziel'], ['abs', 'Gramm']].map(function (x) { return '<button type="button" data-a="tmode" data-k="' + x[0] + '" aria-pressed="' + (trend.mode === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
+    if (!svg) return h + '<p class="note">In diesem Zeitraum sind keine Essenseinträge vorhanden.</p></section>';
+    h += svg + '<p class="note" style="margin:4px 0 0">' + (trend.mode === 'pct' ? '100 % = Tagesziel (Linie „Ziel“). Mehrere Werte lassen sich so direkt vergleichen.' : 'Gramm pro Tag' + (keys.length === 1 ? ', Strich = Tagesziel' : ', gemeinsame Skala: Werte mit großen Mengen wie Gemüse überragen die anderen') + '.') + ' Tage ohne Eintrag bleiben leer.</p>' +
+      T.trendDayHtml(rowsC, keys, chartSel) + T.trendTableHtml(rows, keys, trend.mode);
+    return h + '</section>';
+  }
+  function weightCard(from, to) {
+    var all = T.wSorted(S.weights), cur0 = all.filter(function (x) { return x.day === wDay; })[0], stt = T.weightStats(S.weights, from, to);
+    var val = wInput !== null ? wInput : (cur0 ? String(cur0.kg).replace('.', ',') : '');
+    var h = '<section class="card form" id="wcard"><div class="full eyebrow">Körpergewicht</div>' +
+      '<label class="f" for="wdate">Datum<input id="wdate" type="date" max="' + T.today() + '" value="' + wDay + '"></label>' +
+      '<label class="f" for="wkg">Gewicht (kg)<input id="wkg" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 72,4" value="' + esc(val) + '"></label>' +
+      '<button class="btn full" type="button" data-a="wsave">' + (cur0 ? 'Gewicht am ' + esc(T.dayLabel(wDay)) + ' ändern' : 'Gewicht speichern') + '</button>';
+    if (!stt) return h + '<p class="note full" style="margin:0">' + (all.length ? 'Im gewählten Zeitraum gibt es keinen Gewichtswert. Wähle einen längeren Zeitraum oben.' : 'Noch keine Gewichtswerte. Am besten morgens nach dem Aufstehen wiegen, jeden Tag zur gleichen Zeit.') + '</p></section>';
+    var sg = function (v) { return (v > 0 ? '+' : v < 0 ? '−' : '±') + de(Math.abs(v), 1) + ' kg'; };
+    h += '<div class="full tiles"><div class="tile"><div class="eyebrow">Letzter Wert</div><div class="tv">' + de(stt.last.kg, 1) + ' kg</div><div class="note">' + esc(T.dayLabel(stt.last.day)) + (stt.trend ? ' · 7-Tage-Mittel ' + de(stt.trend, 1) : '') + '</div></div>' +
+      '<div class="tile"><div class="eyebrow">Veränderung</div><div class="tv">' + sg(stt.delta) + '</div><div class="note">' + stt.n + ' Messung' + (stt.n === 1 ? '' : 'en') + ' im Zeitraum</div></div>' +
+      '<div class="tile"><div class="eyebrow">Durchschnitt</div><div class="tv">' + de(stt.avg, 1) + ' kg</div></div>' +
+      '<div class="tile"><div class="eyebrow">Spanne</div><div class="tv">' + de(stt.min, 1) + ' bis ' + de(stt.max, 1) + '</div><div class="note">kg</div></div></div>';
+    h += '<div class="full">' + T.weightChartSvg(S.weights, from, to) + '<p class="note" style="margin:4px 0 0"><span class="lg-dot"></span> Messwert · <span class="lg-line"></span> Mittel der letzten 7 Tage (glättet Wasser und Verdauung)</p></div>';
+    var list = T.wSorted(S.weights, from, to).reverse().slice(0, 8);
+    h += '<div class="full items">' + list.map(function (w) {
+      var i = all.indexOf(w), prev = i > 0 ? all[i - 1] : null, d = prev ? w.kg - prev.kg : null;
+      return '<div class="item"><span>' + esc(T.dayLabel(w.day)) + '</span><span>' + de(w.kg, 1) + ' kg' + (d !== null ? ' · ' + sg(d) : '') + ' <button type="button" class="x" data-a="wdel" data-id="' + esc(w.id) + '" aria-label="Gewichtseintrag löschen">×</button></span></div>';
+    }).join('') + '</div>';
+    if (Math.abs(stt.last.kg - S.profile.w) >= 0.5) h += '<button type="button" class="btn ghost full" data-a="wprofile" data-kg="' + stt.last.kg + '">Profilgewicht (' + de(S.profile.w, 1) + ' kg) auf ' + de(stt.last.kg, 1) + ' kg setzen</button><p class="note full" style="margin:0">Das Profilgewicht bestimmt Grundumsatz, Kalorienziel und die Carb-Empfehlungen pro kg.</p>';
+    return h + '</section>';
+  }
   function viewAus() {
-    var to = T.today(), from = T.addDays(to, -(range - 1)), rows = T.analyze(model(), from, to);
+    var to = T.today(), from = T.addDays(to, -(range - 1)), rows = T.analyze(model(), from, to), P = T.reportParts(rows, S.weights);
     var h = '<div class="top"><div><div class="brand">Auswertung</div><div class="date">Letzte ' + range + ' Tage</div></div></div>' + bannerHtml();
-    h += '<div class="seg" role="group" aria-label="Zeitraum">' + [7, 30, 90].map(function (n) { return '<button data-a="range" data-n="' + n + '" aria-pressed="' + (range === n) + '">' + n + ' Tage</button>'; }).join('') + '</div>';
-    h += T.reportHtml(rows);
+    h += '<div class="seg" role="group" aria-label="Zeitraum">' + RANGES.map(function (x) { return '<button data-a="range" data-n="' + x[0] + '" aria-pressed="' + (range === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
+    if (P.empty) h += '<div class="card empty">In diesem Zeitraum gibt es noch keine Essenseinträge.</div>'; else h += P.tiles;
+    h += trendCard(rows) + weightCard(from, to);
+    if (!P.empty) h += P.veg + P.weeks;
     var xdays = Math.round((T.parseDay(xTo) - T.parseDay(xFrom)) / 86400000) + 1;
     h += '<section class="card form"><div class="full eyebrow">Export für KI-Analyse</div>' +
-      '<p class="note full" style="margin:0">Erstellt eine Datei mit allen Daten des Zeitraums (Training, jede Mahlzeit mit Uhrzeit, Menge und Nährwerten, Ziele, Regelauswertung) und einem fertigen Auftrag für die KI. Du lädst die Datei in eine KI deiner Wahl hoch oder kopierst den Text hinein.</p>' +
+      '<p class="note full" style="margin:0">Erstellt eine Datei mit allen Daten des Zeitraums (Training, jede Mahlzeit mit Uhrzeit, Menge und Nährwerten, Ballaststoffe, Körpergewicht, Ziele, Regelauswertung) und einem fertigen Auftrag für die KI. Du lädst die Datei in eine KI deiner Wahl hoch oder kopierst den Text hinein.</p>' +
       '<div class="full chips" role="group" aria-label="Zeitraum">' + [[7, 'Letzte 7 Tage'], [14, '14 Tage'], [30, '30 Tage'], [90, '90 Tage']].map(function (x) { return '<button type="button" class="chip" data-a="xpreset" data-n="' + x[0] + '">' + x[1] + '</button>'; }).join('') + '</div>' +
       '<label class="f" for="xfrom">Von<input id="xfrom" type="date" max="' + T.today() + '" value="' + xFrom + '"></label>' +
       '<label class="f" for="xto">Bis<input id="xto" type="date" max="' + T.today() + '" value="' + xTo + '"></label>' +
@@ -722,6 +841,35 @@
     }
     if (a === 'delset') { S.profile.sets = S.profile.sets.filter(function (x) { return x.id !== d.id; }); S.profileU = Date.now(); save(); render(); return; }
     if (a === 'resetmacros') { delete S.profile.macroPct; S.profileU = Date.now(); save(); render(); return; }
+    if (a === 'offsearch') {
+      var term = q.trim(); if (term.length < 3) return;
+      var box = function () { var rs = document.getElementById('res'); if (rs) rs.innerHTML = resultsHtml(); };
+      var offP = offSearch(term); box(); offP.then(box); return;
+    }
+    if (a === 'offpick') {
+      var of = off.res[+d.i]; if (!of) return;
+      sel = addOffFood(of); selG = sel.pg; render();
+      var sc = document.getElementById('selcard'); if (sc) sc.scrollIntoView({ block: 'center' });
+      return;
+    }
+    if (a === 'metric') {
+      var ix = trend.keys.indexOf(d.k);
+      if (ix >= 0) { if (trend.keys.length > 1) trend.keys.splice(ix, 1); } else trend.keys.push(d.k);
+      saveTrend(); render(); return;
+    }
+    if (a === 'mpreset') { trend.keys = d.k === 'macros' ? ['c', 'p', 'f'] : ['c', 'p', 'f', 'fi', 'veg', 'fruit']; saveTrend(); render(); return; }
+    if (a === 'tmode') { trend.mode = d.k === 'abs' ? 'abs' : 'pct'; saveTrend(); render(); return; }
+    if (a === 'chartday') { chartSel = chartSel === d.d ? null : d.d; render(); return; }
+    if (a === 'wsave') {
+      var wi = document.getElementById('wkg'), kg = parseFloat(String(wi ? wi.value : '').replace(',', '.'));
+      if (!(kg >= 30 && kg <= 250)) { flash('Bitte ein Gewicht zwischen 30 und 250 kg eintragen, zum Beispiel 72,4.'); return; }
+      kg = Math.round(kg * 10) / 10;
+      var wid = 'w_' + wDay, wex = S.weights.filter(function (x) { return x.id === wid; })[0];
+      if (wex) { wex.kg = kg; wex.u = Date.now(); } else S.weights.push({ id: wid, day: wDay, kg: kg, u: Date.now() });
+      wInput = null; save(); render(); flash('Gewicht ' + String(kg).replace('.', ',') + ' kg am ' + T.dayLabel(wDay) + ' gespeichert.'); return;
+    }
+    if (a === 'wdel') { S.weights = S.weights.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'weights', id: d.id }); save(); render(); return; }
+    if (a === 'wprofile') { S.profile.w = Math.max(35, Math.min(200, Math.round(+d.kg * 10) / 10)); S.profileU = Date.now(); save(); render(); flash('Profilgewicht aktualisiert.'); return; }
     if (a === 'mealtog') {
       var other = d.k === 'soll' ? 'ist' : 'soll';
       if (mealShow[d.k] && !mealShow[other]) return;
@@ -786,7 +934,7 @@
       return;
     }
     if (a === 'csv') {
-      var to = T.today(), csv = T.toCsv(T.analyze(model(), T.addDays(to, -(range - 1)), to));
+      var to = T.today(), csv = T.toCsv(T.analyze(model(), T.addDays(to, -(range - 1)), to), S.weights);
       var file = new File([csv], 'tankplan.csv', { type: 'text/csv' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) navigator.share({ files: [file], title: 'Tankplan' }).catch(function () {});
       else if (navigator.clipboard) navigator.clipboard.writeText(csv).then(function () { flash('CSV in die Zwischenablage kopiert.'); }).catch(function () { flash('Kopieren nicht möglich.'); });
@@ -836,29 +984,39 @@
     else if (id === 'plandesc') { planDesc = e.target.value; document.getElementById('planprev').innerHTML = planPreview(); }
     else if (id === 'plantext') { planText = e.target.value; document.getElementById('planprev').innerHTML = planPreview(); }
     else if (id === 'plandate') { planDay = e.target.value || planDay; document.getElementById('planprev').innerHTML = planPreview(); }
+    else if (id === 'wkg') { wInput = e.target.value; }
     else if (id === 'plantime') { planTime = e.target.value || ''; document.getElementById('planprev').innerHTML = planPreview(); }
   });
+  document.addEventListener('toggle', function (e) { var t = e.target; if (t && t.dataset && t.dataset.eid) editOpen[t.dataset.eid] = t.open; }, true);
   var MT_IDS = { 'p-mb': 'b', 'p-ml': 'l', 'p-md': 'd', 'p-ms': 's' };
   document.addEventListener('change', function (e) {
     var el = e.target, id = el.id, v = el.value, P = S.profile;
+    if (id === 'wdate') { if (v && v <= T.today()) { wDay = v; wInput = null; } render(); return; }
     if (id === 'done-tm') { if (doneEdit) doneEdit.tm = v; return; }
     if (id === 'done-min') { if (doneEdit) doneEdit.min = Number(v); return; }
     if (id === 'plandone') { planDone = el.checked; if (planDone && planDay > T.today()) planDay = T.today(); render(); return; }
     if (el.dataset && el.dataset.planMetric) {
       var workout = S.plan.find(function (item) { return item.id === el.dataset.planId; });
       var metric = el.dataset.planMetric, metricValue = el.value === '' ? null : Number(el.value);
+      if (workout && (metric === 'tm' || metric === 'day' || metric === 'min' || metric === 'lv')) {
+        if (metric === 'tm') workout.tm = el.value || null;
+        else if (metric === 'day') { if (!el.value) { render(); return; } workout.day = el.value; }
+        else if (metric === 'lv') workout.lv = Number(el.value) || 0;
+        else { if (!(metricValue >= 5 && metricValue <= 900)) { flash('Dauer zwischen 5 und 900 Minuten eintragen.'); render(); return; } workout.min = Math.round(metricValue); }
+        workout.u = Date.now(); editOpen[workout.id] = true; save(); render(); return;
+      }
       if (metric === 'desc') {
         if (!workout) return;
         var txt = el.value.trim(), pd = txt ? T.parseWorkoutText(txt, S.profile) : null;
         if (txt && !pd) { flash('Keine Abschnitte mit Watt-Angabe erkannt.'); return; }
         if (txt) { workout.descr = txt; workout.min = r0(pd.min); } else delete workout.descr;
-        workout.u = Date.now(); save(); render(); return;
+        workout.u = Date.now(); editOpen[workout.id] = true; save(); render(); return;
       }
       var metricMax = metric === 'tss' ? 1000 : 10000;
       if (!workout) return;
       if (metricValue !== null && (!Number.isFinite(metricValue) || metricValue < 1 || metricValue > metricMax)) { flash(metric === 'tss' ? 'TSS muss zwischen 1 und 1000 liegen.' : 'kJ muss zwischen 1 und 10.000 liegen.'); render(); return; }
       if (metricValue === null) delete workout[metric]; else workout[metric] = metricValue;
-      workout.u = Date.now(); save(); render(); return;
+      workout.u = Date.now(); editOpen[workout.id] = true; save(); render(); return;
     }
     if (el.dataset && el.dataset.mgram) {
       var mm1 = S.meals.filter(function (x) { return x.id === el.dataset.mgram; })[0], ng = Number(el.value);
