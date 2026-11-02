@@ -205,8 +205,12 @@
     if (!name || k === null || !isFinite(k)) return null;
     var brand = p.brands ? String(p.brands).split(',')[0].trim() : '';
     var sq = +p.serving_quantity;
+    function nz(v) { return v !== undefined && v !== null && v !== '' && isFinite(+v) ? +v : null; }
+    var fib = nz(n.fiber_100g);
+    if (fib === null) fib = nz(n.fiber);
+    if (fib === null && nz(n.fiber_serving) !== null && sq > 0) fib = nz(n.fiber_serving) / sq * 100;
     return { id: uid(), ean: String(code || p.code || ''), n: name + (brand && name.toLowerCase().indexOf(brand.toLowerCase()) < 0 ? ' (' + brand + ')' : ''), k: Math.max(0, k),
-      c: +n.carbohydrates_100g || 0, p: +n.proteins_100g || 0, f: +n.fat_100g || 0, fi: +n.fiber_100g || 0, gr: '', co: '', v: '', pn: 'Portion', pg: sq > 0 && sq < 2000 ? sq : 100, u: Date.now() };
+      c: +n.carbohydrates_100g || 0, p: +n.proteins_100g || 0, f: +n.fat_100g || 0, fi: fib === null ? 0 : fib, fiMiss: fib === null, gr: '', co: '', v: '', pn: 'Portion', pg: sq > 0 && sq < 2000 ? sq : 100, u: Date.now() };
   }
   /* In die eigene Lebensmittelliste übernehmen (merkt sich Strichcode, vermeidet Doppelte) */
   function addOffFood(f) {
@@ -474,7 +478,7 @@
     if (!t.info.length) h += '<div class="card empty">Keine Einheit an diesem Tag. Im Reiter „Plan“ trägst du kommende Workouts mit Uhrzeit ein, die Einheiten aus intervals.icu kommen von selbst.</div>';
     t.info.forEach(function (x) {
       var s = x.s, done = s.src === 'act', canDone = !done && s.id && cur <= T.today();
-      h += '<article class="card sess"><div class="sess-top"><div><div class="sess-title">' + esc(s.title || s.type) + '<span class="tag ' + (done ? 'done' : '') + '">' + (done ? 'absolviert' : 'geplant') + '</span></div>' +
+      h += '<article class="card sess"><div class="sess-top"><div><div class="sess-title">' + esc(s.title || s.type) + '<span class="tag ' + (done ? 'done' : '') + '">' + (done ? 'absolviert' : 'geplant') + '</span>' + (T.isCommute(x) ? '<span class="tag">Pendelfahrt</span>' : '') + '</div>' +
         '<div class="sess-sub">' + (s.tm ? esc(s.tm) + ' Uhr · ' : '') + esc(s.type) + ' · ' + T.INT[s.lv] + ' · ' + s.min + ' min · ca. ' + r0(x.kcal) + ' kcal' + (x.tss ? ' · ' + r0(x.tss) + ' TSS' : '') + (done ? '' : ' (' + x.basis + ')') + '</div></div>' +
         (!done && s.id ? '<button class="x" data-a="delplan" data-id="' + s.id + '" aria-label="Einheit löschen">×</button>' : '') +
         (done && s.man ? '<button class="x" data-a="delact" data-id="' + esc(s.id) + '" aria-label="Eingetragene Einheit löschen">×</button>' : '') + '</div>' +
@@ -626,7 +630,7 @@
   function selPreview() {
     if (!sel) return '';
     var m = T.mealFrom(sel, selG || 0, cur);
-    return '= ' + r0(m.kcal) + ' kcal · ' + de(m.c, 1) + ' g Carbs · ' + de(m.p, 1) + ' g Eiweiß · ' + de(m.f, 1) + ' g Fett';
+    return '= ' + r0(m.kcal) + ' kcal · ' + de(m.c, 1) + ' g Carbs · ' + de(m.p, 1) + ' g Eiweiß · ' + de(m.f, 1) + ' g Fett · ' + de(m.fi || 0, 1) + ' g Ballaststoffe';
   }
   function barcodeCard() {
     var h = '<section class="card barcode-card"><div class="sec-head"><div><div class="eyebrow">Produkt hinzufügen</div><h2>Strichcode scannen</h2></div><span class="barcode-type">EAN / UPC</span></div>';
@@ -655,8 +659,9 @@
       '<div class="note" style="align-self:end;padding-bottom:10px">' + (ctx.manual ? 'Du hast die Uhrzeit selbst gesetzt.' : 'Automatisch: die Uhrzeit der Mahlzeit, falls schon etwas eingetragen ist, sonst die aktuelle. Bei Bedarf ändern.') + '</div></div></section>';
     h += '<section class="card"><label class="f" for="q">3. Was hast du gegessen?<input id="q" type="search" placeholder="z. B. Haferflocken" value="' + esc(q) + '" autocomplete="off"></label><div id="res">' + resultsHtml() + '</div></section>';
     if (sel) {
-      h += '<section class="card sel" id="selcard"><b>' + esc(sel.n) + '</b><div class="note">' + r0(sel.k) + ' kcal · ' + de(sel.c, 1) + ' C · ' + de(sel.p, 1) + ' P · ' + de(sel.f, 1) + ' F je 100 g</div>' +
+      h += '<section class="card sel" id="selcard"><b>' + esc(sel.n) + '</b><div class="note">' + r0(sel.k) + ' kcal · ' + de(sel.c, 1) + ' C · ' + de(sel.p, 1) + ' P · ' + de(sel.f, 1) + ' F · ' + de(sel.fi || 0, 1) + ' Ballaststoffe je 100 g</div>' +
         '<div class="form" style="margin-top:10px"><label class="f" for="g">Menge in g<input id="g" type="number" inputmode="decimal" min="1" value="' + selG + '"></label>' +
+        (S.custom.some(function (x) { return x.id === sel.id; }) ? '<label class="f" for="sel-fi">Ballaststoffe je 100 g' + (sel.fiMiss ? ' (fehlt bei Open Food Facts, bitte ergänzen)' : '') + '<input id="sel-fi" type="number" inputmode="decimal" min="0" step="0.1" value="' + (sel.fi || 0) + '"></label>' : '') +
         '<div class="chips" style="align-self:end"><button class="chip" data-a="portion" data-m="0.5">½ ' + esc(sel.pn) + '</button><button class="chip" data-a="portion" data-m="1">1 ' + esc(sel.pn) + ' (' + sel.pg + ' g)</button><button class="chip" data-a="portion" data-m="2">2×</button></div></div>' +
         '<div class="note" id="selprev">' + selPreview() + '</div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn" data-a="addmeal">Zu ' + esc(T.KINDS[ctx.kind]) + ' hinzufügen</button><button class="btn ghost" data-a="cancelsel">Abbrechen</button></div></section>';
     }
@@ -666,6 +671,7 @@
       '<label class="f full" for="c-n">Name<input id="c-n" type="text" required maxlength="60"></label>' +
       '<label class="f" for="c-k">kcal je 100 g<input id="c-k" type="number" inputmode="decimal" min="0" value="0"></label><label class="f" for="c-c">Carbs je 100 g<input id="c-c" type="number" inputmode="decimal" min="0" value="0"></label>' +
       '<label class="f" for="c-p">Eiweiß je 100 g<input id="c-p" type="number" inputmode="decimal" min="0" value="0"></label><label class="f" for="c-f">Fett je 100 g<input id="c-f" type="number" inputmode="decimal" min="0" value="0"></label>' +
+      '<label class="f" for="c-fi">Ballaststoffe je 100 g<input id="c-fi" type="number" inputmode="decimal" min="0" step="0.1" value="0"></label>' +
       '<label class="f full" for="c-g">Zählt als<select id="c-g"><option value="">Sonstiges</option><option value="G">Gemüse</option><option value="O">Obst</option></select></label>' +
       '<button class="btn full" type="submit">Speichern und auswählen</button></form></details>';
 
@@ -773,7 +779,9 @@
     h += '<section class="card form"><div class="full eyebrow">Übliche Essenszeiten</div>' +
       '<label class="f" for="p-mb">Frühstück<input id="p-mb" type="time" value="' + esc(mt.b) + '"></label><label class="f" for="p-ml">Mittagessen<input id="p-ml" type="time" value="' + esc(mt.l) + '"></label>' +
       '<label class="f" for="p-md">Abendessen<input id="p-md" type="time" value="' + esc(mt.d) + '"></label><label class="f" for="p-ms">Snack<input id="p-ms" type="time" value="' + esc(mt.s) + '"></label>' +
-      '<p class="note full" style="margin:0">Der Mahlzeitenplan baut darauf auf und verschiebt Mahlzeiten rund um dein Training.</p></section>';
+      '<label class="f" for="p-mnf">Keine Mahlzeit von<input id="p-mnf" type="time" value="' + esc(mt.nf || '') + '"></label><label class="f" for="p-mnt">bis<input id="p-mnt" type="time" value="' + esc(mt.nt || '') + '"></label>' +
+      '<label class="f full" for="p-mnw">Die Essenspause gilt<select id="p-mnw"><option value=""' + (mt.nw === '1' ? '' : ' selected') + '>an jedem Tag</option><option value="1"' + (mt.nw === '1' ? ' selected' : '') + '>nur Montag bis Freitag</option></select></label>' +
+      '<p class="note full" style="margin:0">Der Mahlzeitenplan hält sich an diese Zeiten. Einheiten vor dem Training legt er auf eine passende Mahlzeit (auch den Snack), statt eine zusätzliche einzuschieben. In der Essenspause (zum Beispiel Unterricht) schlägt er nichts vor. Das Feld leer lassen schaltet die Pause aus.</p></section>';
 
     h += '<section class="card form"><div class="full eyebrow">Makros in Prozent der Kalorien</div>' +
       '<label class="f" for="p-pct-p">Eiweiß (% der kcal)<input id="p-pct-p" type="number" inputmode="decimal" min="5" max="45" step="1" value="' + pctNow.p + '"></label>' +
@@ -980,6 +988,7 @@
     var id = e.target.id;
     if (id === 'q') { q = e.target.value; document.getElementById('res').innerHTML = resultsHtml(); }
     else if (id === 'g') { selG = +e.target.value || 0; var sp = document.getElementById('selprev'); if (sp) sp.textContent = selPreview(); }
+    else if (id === 'sel-fi') { var cf = S.custom.filter(function (x) { return sel && x.id === sel.id; })[0]; if (cf) { cf.fi = Math.max(0, +e.target.value || 0); cf.u = Date.now(); persist(); var sp2 = document.getElementById('selprev'); if (sp2) sp2.textContent = selPreview(); } }
     else if (id === 'plantitle') { planTitle = e.target.value; var pp = document.getElementById('planprev'); if (pp) pp.innerHTML = planPreview(); }
     else if (id === 'plandesc') { planDesc = e.target.value; document.getElementById('planprev').innerHTML = planPreview(); }
     else if (id === 'plantext') { planText = e.target.value; document.getElementById('planprev').innerHTML = planPreview(); }
@@ -988,7 +997,7 @@
     else if (id === 'plantime') { planTime = e.target.value || ''; document.getElementById('planprev').innerHTML = planPreview(); }
   });
   document.addEventListener('toggle', function (e) { var t = e.target; if (t && t.dataset && t.dataset.eid) editOpen[t.dataset.eid] = t.open; }, true);
-  var MT_IDS = { 'p-mb': 'b', 'p-ml': 'l', 'p-md': 'd', 'p-ms': 's' };
+  var MT_IDS = { 'p-mb': 'b', 'p-ml': 'l', 'p-md': 'd', 'p-ms': 's', 'p-mnf': 'nf', 'p-mnt': 'nt', 'p-mnw': 'nw' };
   document.addEventListener('change', function (e) {
     var el = e.target, id = el.id, v = el.value, P = S.profile;
     if (id === 'wdate') { if (v && v <= T.today()) { wDay = v; wInput = null; } render(); return; }
@@ -1043,6 +1052,12 @@
     if (id === 'planlib') { var lb = S.profile.lib.filter(function (x) { return x.id === v; })[0]; if (lb) { planTitle = lb.title; planDesc = lb.descr; } else { planTitle = ''; planDesc = ''; } render(); return; }
     if (id === 'planupd') { planUpd = el.checked; var pv = document.getElementById('planprev'); if (pv) pv.innerHTML = planPreview(); return; }
     if (id === 'ctime') { ctxInit(false); if (v) { ctx.time = v; ctx.manual = true; } render(); return; }
+    if (id === 'sel-fi') {
+      var cf2 = S.custom.filter(function (x) { return sel && x.id === sel.id; })[0]; if (!cf2) return;
+      delete cf2.fiMiss; cf2.u = Date.now(); var fixN = 0;
+      S.meals.forEach(function (m) { if (m.name === cf2.n && !m.fi && cf2.fi > 0) { m.fi = cf2.fi * m.g / 100; m.u = Date.now(); fixN++; } });
+      save(); flash(fixN ? 'Ballaststoffe gespeichert, bei ' + fixN + ' bereits eingetragenen Mahlzeiten nachgetragen.' : 'Ballaststoffe gespeichert.'); return;
+    }
     if (id === 'i-id') { S.cfg.iid = v; persist(); return; }
     if (id === 'i-key') { S.cfg.ikey = v; persist(); return; }
     if (MT_IDS[id]) { if (!P.mt) P.mt = {}; if (v) P.mt[MT_IDS[id]] = v; else delete P.mt[MT_IDS[id]]; S.profileU = Date.now(); save(); render(); return; }
@@ -1090,7 +1105,7 @@
       planText = ''; planDesc = ''; save(); flash(n ? n + (planDone ? ' Einheit' + (n === 1 ? '' : 'en') + ' als absolviert eingetragen.' : ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt.') : 'Keine Workouts erkannt.');
     } else if (id === 'customform') {
       var f = { id: uid(), n: document.getElementById('c-n').value.trim(), k: +document.getElementById('c-k').value || 0, c: +document.getElementById('c-c').value || 0,
-        p: +document.getElementById('c-p').value || 0, f: +document.getElementById('c-f').value || 0, fi: 0, gr: document.getElementById('c-g').value, co: '', v: '', pn: 'Portion', pg: 100, u: Date.now() };
+        p: +document.getElementById('c-p').value || 0, f: +document.getElementById('c-f').value || 0, fi: +document.getElementById('c-fi').value || 0, gr: document.getElementById('c-g').value, co: '', v: '', pn: 'Portion', pg: 100, u: Date.now() };
       if (!f.n) return;
       useFood(f);
     }

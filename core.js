@@ -157,6 +157,16 @@
     var factor = Math.sqrt(tss * 60 / min / 100);
     return { factor: factor, lv: factor < 0.7 ? 0 : factor < 0.9 ? 1 : 2 };
   }
+  /* Pendelfahrt: lockere Radfahrt, mit passendem Titel bis 90 min, sonst bis 40 min. Sie zählt zum Energiebedarf, bekommt aber keine eigenen Vor-, Während- oder Nach-Mahlzeiten. */
+  var COMMUTE_RE = /pendel|commut|schulweg|arbeitsweg|zur schule|zur arbeit|zur uni/i;
+  function isCommute(x) {
+    var s = x && x.s ? x.s : x;
+    if (!s || s.type !== 'Rad') return false;
+    var lv = x && x.lv !== undefined ? x.lv : s.lv;
+    if (Number(lv) > 0) return false;
+    var m = Number(s.min) || 0;
+    return COMMUTE_RE.test(s.title || '') ? m <= 90 : m <= 40;
+  }
   function bucket(load) { return load === 0 ? 3.5 : load < 0.8 ? 5 : load < 1.8 ? 6.5 : load < 3 ? 8 : 10; }
   var BUCKET_NAME = { 3.5: 'Ruhetag', 5: 'Leichter Tag', 6.5: 'Standardtag', 8: 'Hoher Bedarf', 10: 'Schlüsseltag' };
 
@@ -218,14 +228,15 @@
   }
   function target(p, sess, nextSess, lvl) {
     var info = sess.map(function (s) { return sessInfo(s, p); });
-    var load = 0, trainKcal = 0, trainCarbs = 0;
-    info.forEach(function (x) { load += x.load; trainKcal += x.kcal; trainCarbs += x.carbs; });
-    var gkg = bucket(load), note = '';
+    var load = 0, trainKcal = 0, trainCarbs = 0, loadMain = 0, cmN = 0;
+    info.forEach(function (x) { load += x.load; trainKcal += x.kcal; trainCarbs += x.carbs; if (isCommute(x)) cmN++; else loadMain += x.load; });
+    var gkg = bucket(loadMain), note = '';
     var nl = 0;
-    (nextSess || []).forEach(function (s) { nl += sessInfo(s, p).load; });
+    (nextSess || []).forEach(function (s) { var ni = sessInfo(s, p); if (!isCommute(ni)) nl += ni.load; });
     var ng = bucket(nl);
-    var dayType = BUCKET_NAME[bucket(load)];
-    if (ng >= 8 && load === 0) { dayType = 'Ruhetag vor Schlüsseltag'; note = 'Morgen ist eine harte Einheit geplant. Das heutige Carb-Ziel basiert nur auf dem heutigen Bedarf.'; }
+    var dayType = BUCKET_NAME[bucket(loadMain)];
+    if (cmN && loadMain === 0) dayType = 'Pendeltag';
+    if (ng >= 8 && loadMain === 0) { dayType = 'Ruhetag vor Schlüsseltag'; note = 'Morgen ist eine harte Einheit geplant. Das heutige Carb-Ziel basiert nur auf dem heutigen Bedarf.'; }
     var w = p.w;
     var pal = PAL[lvl] || PAL[3];
     var energyFactor = p.goal === 'lose' ? 0.85 : p.goal === 'gain' ? 1.1 : 1;
@@ -368,7 +379,7 @@
       var ms = model.meals.filter(function (m) { return m.day === d; });
       var tm = 0;
       sess.forEach(function (s) { tm += s.min; });
-      var tg = target(model.profile, sess, next, (model.profile.lvls || {})[d]), mp = mealPlan(model.profile, tg, model.profile.mt);
+      var tg = target(model.profile, sess, next, (model.profile.lvls || {})[d]), mp = mealPlan(model.profile, tg, model.profile.mt, d);
       ms = ms.slice().sort(function (a, b) { return (tmin(a.t) === null ? 9999 : tmin(a.t)) - (tmin(b.t) === null ? 9999 : tmin(b.t)); });
       rows.push({ pm: model.meals.filter(function (m) { return m.day === addDays(d, -1); }), day: d, t: tg, st: dayStats(ms), n: ms.length, meals: ms, sess: sess, trainMin: tm, mp: mp, match: matchMeals(mp, ms, tg), groups: groupMeals(ms, trainWin(tg)) });
     }
@@ -389,7 +400,7 @@
   function hmText(min) { min = Math.max(0, Math.round(min / 5) * 5); var h = Math.floor(min / 60), m = min % 60; return h ? (m ? h + ' h ' + m + ' min' : h + ' h') : m + ' min'; }
 
   function trainWin(t) {
-    return t.info.map(function (x) {
+    return t.info.filter(function (x) { return !isCommute(x); }).map(function (x) {
       var st = tmin(x.s.tm), assumed = st === null;
       if (assumed) st = 17 * 60;
       return { x: x, st: st, en: st + x.s.min, assumed: assumed, big: x.preWhen.charAt(0) === '2' };
@@ -417,44 +428,92 @@
     return t.note ? 'Carbs betonen für morgen. Gemüse in Maßen, damit der Magen nicht zu voll ist.' : 'Schwerpunkt Gemüse, dazu Eiweiß. Carbs nach Bedarf.';
   }
 
-  function mealPlan(p, t, mtIn) {
+  function mealPlan(p, t, mtIn, day) {
     var mt = {};
     Object.keys(DEF_MT).forEach(function (k) { mt[k] = (mtIn && mtIn[k]) || DEF_MT[k]; });
     var trs = trainWin(t);
+    /* Essenspause (z. B. Schule 14:15 bis 15:45): dort wird keine Mahlzeit vorgeschlagen */
+    var blk = null, bf = mtIn ? tmin(mtIn.nf) : null, bt = mtIn ? tmin(mtIn.nt) : null;
+    if (bf !== null && bt !== null && bt > bf) {
+      var wd = day ? parseDay(day).getDay() : -1;
+      if (!(mtIn.nw === '1' && (wd === 0 || wd === 6))) blk = { a: bf, b: bt };
+    }
+    function inBlk(m) { return !!blk && m > blk.a && m < blk.b; }
+    function freeAt(at, lo, hi) {
+      if (!inBlk(at)) return at;
+      var c = [];
+      if (blk.a >= lo && blk.a <= hi) c.push(blk.a);
+      if (blk.b >= lo && blk.b <= hi) c.push(blk.b);
+      if (!c.length) return at;
+      c.sort(function (x, y) { return Math.abs(x - at) - Math.abs(y - at); });
+      return c[0];
+    }
+    /* Feste Anker sind die eingestellten Essenszeiten, auch der Snack. Sie werden nur verschoben, wenn sie mitten ins Training fallen. */
     var base = [
       { id: 'b', kind: 'frueh', at: tmin(mt.b), w: 0.3 },
       { id: 'l', kind: 'mittag', at: tmin(mt.l), w: 0.35 },
       { id: 'd', kind: 'abend', at: tmin(mt.d), w: 0.35 }
     ];
+    var cms = t.info.filter(function (x) { return isCommute(x) && tmin(x.s.tm) !== null; }).map(function (x) { var st0 = tmin(x.s.tm); return { st: st0, en: st0 + x.s.min, c: x.carbs }; });
+    var snT = tmin(mt.s);
+    var snAfterCm = snT !== null && cms.some(function (m) { return snT >= m.en && snT - m.en <= 90; });
+    var snack = (t.c >= 450 || trs.length || snAfterCm) && snT !== null ? { id: 's', kind: 'snack', at: snT, w: 0.15 } : null;
+    if (snack) base.push(snack);
     trs.forEach(function (q) {
+      var pref = q.st - (q.big ? 150 : 60), best = null;
+      if (!q.preSlot) base.forEach(function (b) {
+        if (b.role || inBlk(b.at) || b.at < q.st - 180 || b.at > q.st - 45) return;
+        if (!best || Math.abs(b.at - pref) < Math.abs(best.at - pref)) best = b;
+      });
+      if (best) { best.role = 'pre'; best.q = q; q.preSlot = best; }
       base.forEach(function (b) {
         if (b.role) return;
-        if (b.at >= q.st - 180 && b.at <= q.st - 45 && !q.preSlot) { b.role = 'pre'; b.q = q; q.preSlot = b; return; }
         if (b.at > q.st - 45 && b.at < q.en) b.at = q.en + 30;
         if (b.at >= q.en && b.at <= q.en + 90 && !q.postSlot) { b.role = 'post'; b.q = q; q.postSlot = b; }
       });
     });
     var all = base.slice();
     trs.forEach(function (q, i) {
-      if (!q.preSlot) all.push({ id: 'pre' + i, kind: 'pre', role: 'pre', q: q, at: q.st - (q.big ? 150 : 60) });
+      if (!q.preSlot) all.push({ id: 'pre' + i, kind: 'pre', role: 'pre', q: q, at: freeAt(q.st - (q.big ? 150 : 60), q.st - 180, q.st - 45) });
       if (q.x.during > 0) all.push({ id: 'dur' + i, kind: 'during', q: q, at: q.st, c: q.x.during });
-      if (!q.postSlot) all.push({ id: 'post' + i, kind: 'post', role: 'post', q: q, at: q.en + 30 });
+      if (!q.postSlot) all.push({ id: 'post' + i, kind: 'post', role: 'post', q: q, at: freeAt(q.en + 30, q.en, q.en + 120) });
     });
-    var sn = tmin(mt.s);
-    var near = all.some(function (s) { return Math.abs(s.at - sn) < 75; });
-    var inTr = trs.some(function (q) { return sn > q.st - 45 && sn < q.en + 30; });
-    if (t.c >= 450 && !near && !inTr) all.push({ id: 's', kind: 'snack', at: sn, w: 0.15 });
+    if (blk) all.forEach(function (s) {
+      if (s.kind === 'during' || !inBlk(s.at)) return;
+      s.at = s.role === 'pre' ? freeAt(s.at, s.q.st - 180, s.q.st - 45) : blk.b;
+    });
+    if (snack && !snack.role) {
+      var near = all.some(function (s) { return s !== snack && Math.abs(s.at - snack.at) < 75; });
+      var inTr = trs.some(function (q) { return snack.at > q.st - 45 && snack.at < q.en + 30; });
+      if ((t.c < 450 && !snAfterCm) || near || inTr) all.splice(all.indexOf(snack), 1);
+    }
 
     var fixed = 0;
     all.forEach(function (s) {
       if (s.role === 'pre') s.c = s.q.x.pre; else if (s.role === 'post') s.c = s.q.x.post;
       if (s.role || s.kind === 'during') fixed += s.c;
     });
-    var L = Math.max(0, t.c - fixed);
     var CW = { pre: 0.1, post: 0.5, frueh: 0.3, mittag: 0.35, abend: 0.35, snack: 0.15 };
     var recv = all.filter(function (s) { return s.kind !== 'during'; });
+    /* Carbs der Pendelfahrt: in die Mahlzeit direkt danach (bis 90 min), sonst in die letzte davor (bis 3 h), sonst in die nächste danach */
+    var cmTotal = 0;
+    cms.forEach(function (m) {
+      var bef = null, aft = null, aft90 = null;
+      recv.forEach(function (s) {
+        if (s.at <= m.st + 15) { if (m.st - s.at <= 180 && (!bef || s.at > bef.at)) bef = s; }
+        else if (s.at >= m.en) {
+          if (s.at - m.en <= 240 && (!aft || s.at < aft.at)) aft = s;
+          if (s.at - m.en <= 90 && (!aft90 || s.at < aft90.at)) aft90 = s;
+        }
+      });
+      var tg = aft90 || bef || aft;
+      if (!tg) return;
+      (tg.cm = tg.cm || []).push({ at: m.st, c: m.c, after: tg.at >= m.en });
+      tg.cmC = (tg.cmC || 0) + m.c; cmTotal += m.c;
+    });
+    var L = Math.max(0, t.c - fixed - cmTotal);
     var wsum = recv.reduce(function (acc, s) { return acc + CW[s.role || s.kind]; }, 0) || 1;
-    recv.forEach(function (s) { s.c = (s.c || 0) + L * CW[s.role || s.kind] / wsum; });
+    recv.forEach(function (s) { s.c = (s.c || 0) + (s.cmC || 0) + L * CW[s.role || s.kind] / wsum; });
     var elig = all.filter(function (s) { return s.kind !== 'during'; });
     function spread(total, table, key) {
       var ws = elig.map(function (s) { return table[s.role || s.kind]; });
@@ -474,6 +533,7 @@
         s.rel = s.role === 'pre' ? hmText(s.q.st - s.at) + ' vor ' + ty : s.role === 'post' ? hmText(s.at - s.q.en) + ' nach ' + ty : ty + ', ' + s.q.x.s.min + ' min';
       }
       s.focus = focusText(s, t);
+      if (s.cm) s.cm.forEach(function (m) { s.focus += ' Enthält ' + r0(m.c) + ' g Carbs ' + (m.after ? 'zum Auffüllen nach der' : 'für die') + ' Pendelfahrt um ' + tfmt(m.at) + '.'; });
     });
     all.sort(function (a, b) { return a.at - b.at; });
     return all.map(function (s) { var o = {}; Object.keys(s).forEach(function (k) { if (k !== 'q') o[k] = s[k]; }); return o; });
@@ -1223,6 +1283,7 @@
     ln('- Gewählte Makroverteilung: ' + (mp0 ? mp0.c + ' % Carbs, ' + mp0.p + ' % Eiweiß, ' + mp0.f + ' % Fett der Kalorien' : 'automatisch (g/kg nach Trainingslast)'));
     var mt = Object.assign({}, DEF_MT, p.mt || {});
     ln('- Übliche Essenszeiten: Frühstück ' + mt.b + ', Mittagessen ' + mt.l + ', Abendessen ' + mt.d + ', Snack ' + mt.s);
+    if (mt.nf && mt.nt) ln('- Essenspause (keine Mahlzeit möglich): ' + mt.nf + ' bis ' + mt.nt + (mt.nw === '1' ? ', nur Montag bis Freitag' : ''));
     ln();
     ln('## Begriffe');
     ln();
@@ -1325,7 +1386,7 @@
     INT: INT, TYPES: TYPES, GOALS: GOALS, VITN: VITN, COLN: COLN,
     iso: iso, today: today, addDays: addDays, parseDay: parseDay, dayLabel: dayLabel, dayLabelLong: dayLabelLong, r0: r0, esc: esc, de: de,
     parseFoods: parseFoods, searchFoods: searchFoods, mealFrom: mealFrom, norm: norm,
-    bmr: bmr, mapType: mapType, lvFromLoad: lvFromLoad, intensityFromTss: intensityFromTss, parseWorkoutText: parseWorkoutText, zonesOf: zonesOf, macroPct: macroPct, ZONE_NAMES: ZONE_NAMES, ZONE_UPPER: ZONE_UPPER, sessInfo: sessInfo, daySessions: daySessions, target: target,
+    isCommute: isCommute, bmr: bmr, mapType: mapType, lvFromLoad: lvFromLoad, intensityFromTss: intensityFromTss, parseWorkoutText: parseWorkoutText, zonesOf: zonesOf, macroPct: macroPct, ZONE_NAMES: ZONE_NAMES, ZONE_UPPER: ZONE_UPPER, sessInfo: sessInfo, daySessions: daySessions, target: target,
     parseLine: parseLine, dayStats: dayStats, ampel: ampel, analyze: analyze,
     DEF_MT: DEF_MT, KINDS: KINDS, tmin: tmin, tfmt: tfmt, hmText: hmText, trainWin: trainWin, guessKind: guessKind, mealPlan: mealPlan, matchMeals: matchMeals, relLabel: relLabel, fuelCheck: fuelCheck,
     glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
