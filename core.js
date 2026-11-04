@@ -390,6 +390,10 @@
   /* ---------- Mahlzeitenplan ---------- */
   var DEF_MT = { b: '07:30', l: '12:30', d: '19:00', s: '15:30' };
   var KINDS = { frueh: 'Frühstück', mittag: 'Mittagessen', abend: 'Abendessen', snack: 'Snack', pre: 'Vor dem Training', during: 'Beim Training', post: 'Nach dem Training' };
+  /* Mahlzeit-Zuordnung: slot = "art" (alt) oder "art#nr" (neu). nr zählt gleiche Arten am Tag, z. B. nach dem Training #1 und #2 oder mittag#2 für ein zweites Mittagessen. */
+  function slotKind(s) { return s ? String(s).split('#')[0] : ''; }
+  function slotInst(s) { var n = s ? parseInt(String(s).split('#')[1], 10) : 0; return n > 0 ? n : 0; }
+  function slotLabel(kind, inst) { return (KINDS[kind] || kind) + (inst > 1 ? ' ' + inst : ''); }
   var PW = { pre: 0.6, post: 1.2, frueh: 1, mittag: 1, abend: 1, snack: 0.5 };
   var FW = { pre: 0.3, post: 0.5, frueh: 1, mittag: 1, abend: 1, snack: 0.6 };
   var VW = { pre: 0, post: 0.5, frueh: 0.6, mittag: 1, abend: 1, snack: 0.3 };
@@ -541,18 +545,34 @@
 
   function matchMeals(slots, meals, t) {
     var trs = trainWin(t);
-    var res = slots.map(function (s) { return { s: s, items: [] }; }), extra = [];
+    var res = slots.map(function (s) { return { s: s, items: [], inst: 0 }; }), extra = [], more = {}, keyOf = {}, cnt = {};
+    res.forEach(function (r) { var k = r.s.kind; cnt[k] = (cnt[k] || 0) + 1; r.inst = cnt[k]; });
     meals.forEach(function (m) {
-      var mm = tmin(m.t), kind = m.slot || guessKind(mm, trs), best = -1, bd = 1e9;
-      res.forEach(function (r, i) {
-        if (r.s.kind === kind || r.s.role === kind) {
-          var d = mm === null ? 0 : Math.abs(r.s.at - mm);
-          if (d < bd) { bd = d; best = i; }
+      var mm = tmin(m.t), kind = slotKind(m.slot) || guessKind(mm, trs), inst = slotInst(m.slot), best = -1, bd = 1e9;
+      if (inst) {
+        res.forEach(function (r, i) { if (r.s.kind === kind && r.inst === inst) best = i; });
+        if (best < 0) {
+          var key = kind + '#' + inst;
+          if (!more[key]) more[key] = { kind: kind, inst: inst, key: key, label: slotLabel(kind, inst), items: [] };
+          more[key].items.push(m); keyOf[m.id] = key; return;
         }
-      });
-      if (best >= 0) res[best].items.push(m); else extra.push(m);
+      } else {
+        res.forEach(function (r, i) {
+          if (r.s.kind === kind || r.s.role === kind) {
+            var d = mm === null ? 0 : Math.abs(r.s.at - mm);
+            if (d < bd) { bd = d; best = i; }
+          }
+        });
+      }
+      if (best >= 0) { res[best].items.push(m); keyOf[m.id] = res[best].s.kind + '#' + res[best].inst; } else extra.push(m);
     });
-    return { slots: res, extra: extra };
+    var moreList = Object.keys(more).map(function (k) { return more[k]; });
+    moreList.forEach(function (g) {
+      var best = null; g.items.forEach(function (m) { var x = tmin(m.t); if (x !== null && (best === null || x < best)) best = x; });
+      g.at = best === null ? 9999 : best; g.time = best === null ? '' : tfmt(best);
+    });
+    moreList.sort(function (a, b) { return a.at - b.at; });
+    return { slots: res, extra: extra, more: moreList, keyOf: keyOf };
   }
 
   function relLabel(tm, sess) {
@@ -610,15 +630,15 @@
   function nowMinutes() { var d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
 
   function groupMeals(meals, trs) {
-    var arr = meals.map(function (m) { return { m: m, t: tmin(m.t), kind: m.slot || guessKind(tmin(m.t), trs) }; });
+    var arr = meals.map(function (m) { return { m: m, t: tmin(m.t), kind: slotKind(m.slot) || guessKind(tmin(m.t), trs), inst: slotInst(m.slot) }; });
     arr.sort(function (a, b) { return (a.t === null ? 9999 : a.t) - (b.t === null ? 9999 : b.t); });
     var groups = [];
     arr.forEach(function (x) {
       var g = null;
       for (var i = groups.length - 1; i >= 0; i--) {
-        if (groups[i].kind === x.kind && x.t !== null && groups[i].t !== null && Math.abs(x.t - groups[i].t) <= 60) { g = groups[i]; break; }
+        if (groups[i].kind === x.kind && groups[i].inst === x.inst && (x.inst > 0 || (x.t !== null && groups[i].t !== null && Math.abs(x.t - groups[i].t) <= 60))) { g = groups[i]; break; }
       }
-      if (!g) { g = { kind: x.kind, t: x.t, time: x.m.t || '', items: [], c: 0, p: 0, f: 0, kcal: 0 }; groups.push(g); }
+      if (!g) { g = { kind: x.kind, inst: x.inst, label: slotLabel(x.kind, x.inst), t: x.t, time: x.m.t || '', items: [], c: 0, p: 0, f: 0, kcal: 0 }; groups.push(g); }
       g.items.push(x.m); g.c += x.m.c; g.p += x.m.p; g.f += x.m.f; g.kcal += x.m.kcal;
     });
     return groups;
@@ -786,7 +806,7 @@
     });
     else row.meals.forEach(function (x) {
       var tm = tmin(x.t), m = { at: tm, c: +x.c || 0, p: +x.p || 0, f: +x.f || 0, fi: +x.fi || 0 };
-      var w = sessFor(row, tm, x.slot === 'during');
+      var w = sessFor(row, tm, slotKind(x.slot) === 'during');
       if (w) meals = meals.concat(spread(m, w)); else meals.push(m);
     });
     (row.pm || []).forEach(function (x) {
@@ -1211,7 +1231,7 @@
 
   function mealGroupHtml(g, sess) {
     var rl = relLabel(g.time, sess);
-    var h = '<details class="meal"><summary><span class="mt">' + esc(g.time || '') + '</span><span class="mn">' + esc(KINDS[g.kind] || g.kind) + '</span><span class="mv">' + r0(g.c) + ' C · ' + r0(g.p) + ' P · ' + r0(g.f) + ' F</span></summary>';
+    var h = '<details class="meal"><summary><span class="mt">' + esc(g.time || '') + '</span><span class="mn">' + esc(g.label || KINDS[g.kind] || g.kind) + '</span><span class="mv">' + r0(g.c) + ' C · ' + r0(g.p) + ' P · ' + r0(g.f) + ' F</span></summary>';
     if (rl) h += '<p class="note">' + esc(rl) + '</p>';
     g.items.forEach(function (m) {
       h += '<div class="entry"><div class="n">' + esc(m.name) + '</div><div class="d">' + r0(m.g) + ' g · ' + r0(m.c) + ' C · ' + r0(m.p) + ' P · ' + r0(m.f) + ' F</div></div>';
@@ -1351,7 +1371,7 @@
       if (!r.groups.length) ln('Nichts gegessen eingetragen.');
       r.groups.forEach(function (g) {
         var rl = relLabel(g.time, r.sess);
-        ln('- ' + (KINDS[g.kind] || g.kind) + ' um ' + (g.time || '?') + ' Uhr' + (rl ? ' (' + rl + ')' : '') + ': ' + r0(g.kcal) + ' kcal, ' + r0(g.c) + ' g C, ' + r0(g.p) + ' g P, ' + r0(g.f) + ' g F');
+        ln('- ' + (g.label || KINDS[g.kind] || g.kind) + ' um ' + (g.time || '?') + ' Uhr' + (rl ? ' (' + rl + ')' : '') + ': ' + r0(g.kcal) + ' kcal, ' + r0(g.c) + ' g C, ' + r0(g.p) + ' g P, ' + r0(g.f) + ' g F');
         ln();
         ln('  | Uhrzeit | Lebensmittel | Menge g | kcal | Carbs g | Eiweiß g | Fett g | Ballaststoffe g | Kategorie |');
         ln('  |---|---|---|---|---|---|---|---|---|');
@@ -1388,7 +1408,7 @@
     parseFoods: parseFoods, searchFoods: searchFoods, mealFrom: mealFrom, norm: norm,
     isCommute: isCommute, bmr: bmr, mapType: mapType, lvFromLoad: lvFromLoad, intensityFromTss: intensityFromTss, parseWorkoutText: parseWorkoutText, zonesOf: zonesOf, macroPct: macroPct, ZONE_NAMES: ZONE_NAMES, ZONE_UPPER: ZONE_UPPER, sessInfo: sessInfo, daySessions: daySessions, target: target,
     parseLine: parseLine, dayStats: dayStats, ampel: ampel, analyze: analyze,
-    DEF_MT: DEF_MT, KINDS: KINDS, tmin: tmin, tfmt: tfmt, hmText: hmText, trainWin: trainWin, guessKind: guessKind, mealPlan: mealPlan, matchMeals: matchMeals, relLabel: relLabel, fuelCheck: fuelCheck,
+    DEF_MT: DEF_MT, KINDS: KINDS, tmin: tmin, tfmt: tfmt, hmText: hmText, trainWin: trainWin, guessKind: guessKind, mealPlan: mealPlan, matchMeals: matchMeals, slotKind: slotKind, slotInst: slotInst, slotLabel: slotLabel, relLabel: relLabel, fuelCheck: fuelCheck,
     glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
     reportHtml: reportHtml, reportParts: reportParts, METRICS: METRICS, trendChartSvg: trendChartSvg, trendTableHtml: trendTableHtml, trendDayHtml: trendDayHtml, wSorted: wSorted, weightStats: weightStats, weightChartSvg: weightChartSvg, wTrendAt: wTrendAt, dayListHtml: dayListHtml, toCsv: toCsv, chartSvg: chartSvg
   };

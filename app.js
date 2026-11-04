@@ -33,6 +33,27 @@
   var UIKEY = 'tankplan.ui';
   var mealShow = (function () { try { var u = JSON.parse(localStorage.getItem(UIKEY)); if (u && (u.soll || u.ist)) return { soll: !!u.soll, ist: !!u.ist }; } catch (e) {} return { soll: true, ist: true }; })();
   var doneEdit = null, planDone = false, editOpen = {};
+  var openKey = '', pending = [], nmForm = null, editRow = {};
+  /* Designs: nur Farben, Formen und Schrift (CSS-Variablen in style.css, html[data-design]) */
+  var DESIGNS = [
+    ['standard', 'Tankplan', 'Frisches Grün, klar', ['#F3F8F5', '#176B55', '#FFFFFF'], '#176B55'],
+    ['wald', 'Waldgrün', 'Creme und Tannengrün, runde Karten', ['#F1E4D0', '#2F5D45', '#FBF4E8'], '#F1E4D0'],
+    ['nebel', 'Nebel', 'Blaugrau, weich, Serifen', ['#B9C8CE', '#5A7790', '#DCE4E7'], '#B9C8CE'],
+    ['kaffee', 'Espresso', 'Dunkel mit Kupfer, Serifen', ['#2B2126', '#C58B5C', '#3A2D33'], '#2B2126']
+  ];
+  var design = (function () { try { var v = localStorage.getItem('tankplan.design'); if (DESIGNS.some(function (x) { return x[0] === v; })) return v; } catch (e) {} return 'standard'; })();
+  function applyDesign() {
+    document.documentElement.setAttribute('data-design', design);
+    var m = document.querySelector('meta[name="theme-color"]'), cur0 = DESIGNS.filter(function (x) { return x[0] === design; })[0];
+    if (m && cur0) m.setAttribute('content', cur0[4]);
+  }
+  applyDesign();
+  function designHtml() {
+    return '<section class="card"><div class="eyebrow" style="margin-bottom:8px">Design</div><div class="dsg" role="group" aria-label="Design der App">' +
+      DESIGNS.map(function (x) {
+        return '<button type="button" class="dsg-o" data-a="design" data-v="' + x[0] + '" aria-pressed="' + (design === x[0]) + '"><span class="dsg-sw" aria-hidden="true"><i style="background:' + x[3][0] + '"></i><i style="background:' + x[3][1] + '"></i><i style="background:' + x[3][2] + '"></i></span><b>' + esc(x[1]) + '</b><small>' + esc(x[2]) + '</small></button>';
+      }).join('') + '</div><p class="note">Gilt nur auf diesem Gerät.</p></section>';
+  }
   var UI2 = 'tankplan.ui2';
   var trend = (function () { try { var u = JSON.parse(localStorage.getItem(UI2)); if (u && Array.isArray(u.keys) && u.keys.length) return { keys: u.keys.filter(function (k) { return T.METRICS.some(function (m) { return m.k === k; }); }), mode: u.mode === 'abs' ? 'abs' : 'pct' }; } catch (e) {} return { keys: ['c', 'p', 'f'], mode: 'pct' }; })();
   if (!trend.keys.length) trend.keys = ['c', 'p', 'f'];
@@ -376,18 +397,79 @@
   function dayTrs() { var r = T.analyze(model(), cur, cur)[0]; return T.trainWin(r.t); }
   function defaultTime() { return cur === T.today() ? nowHM() : '12:00'; }
   /* Uhrzeit für eine Mahlzeit: bestehende Mahlzeit dieser Art an diesem Tag, sonst jetzt (heute) oder die übliche Zeit */
-  function mealTimeFor(kind, exceptIds) {
-    var same = S.meals.filter(function (m) { return m.day === cur && m.slot === kind && m.t && (!exceptIds || exceptIds.indexOf(m.id) < 0); });
+  function mealTimeFor(kind, exceptIds, inst) {
+    var same = S.meals.filter(function (m) { return m.day === cur && T.slotKind(m.slot) === kind && (!inst || T.slotInst(m.slot) === inst) && m.t && (!exceptIds || exceptIds.indexOf(m.id) < 0); });
     if (same.length) { same.sort(function (a, b) { return a.t < b.t ? 1 : -1; }); return same[0].t; }
     return cur === T.today() ? nowHM() : (usualMealTime(kind) || '12:00');
   }
+  function dayRow() { return T.analyze(model(), cur, cur)[0]; }
+  /* Nummer der Mahlzeit dieser Art, die zur Uhrzeit passt (z. B. welches „Nach dem Training“) */
+  function nearestInst(kind, min, r) {
+    var best = 1, bd = 1e9;
+    r.match.slots.forEach(function (ms) { if (ms.s.kind !== kind) return; var dd = min === null ? 0 : Math.abs(ms.s.at - min); if (dd < bd) { bd = dd; best = ms.inst; } });
+    return best;
+  }
+  function nextInst(kind, r) {
+    var n = 0;
+    r.match.slots.forEach(function (ms) { if (ms.s.kind === kind) n = Math.max(n, ms.inst); });
+    r.match.more.forEach(function (g) { if (g.kind === kind) n = Math.max(n, g.inst); });
+    pending.forEach(function (x) { if (x.day === cur && x.kind === kind) n = Math.max(n, x.inst); });
+    return n + 1;
+  }
+  /* Uhrzeit für die gewählte Mahlzeit: schon Eingetragenes dort, sonst jetzt (heute) oder die geplante Zeit */
+  function slotTime(kind, inst, plannedTm) {
+    if (ctx && ctx.day === cur && ctx.times && ctx.times[kind + '#' + inst]) return ctx.times[kind + '#' + inst];
+    var same = S.meals.filter(function (m) { return m.day === cur && m.slot && T.slotKind(m.slot) === kind && T.slotInst(m.slot) === inst && m.t; });
+    if (same.length) { same.sort(function (x, y) { return x.t < y.t ? 1 : -1; }); return same[0].t; }
+    return cur === T.today() ? nowHM() : (plannedTm || usualMealTime(kind) || '12:00');
+  }
   function ctxInit(force) {
     if (force || !ctx || ctx.day !== cur) {
-      var currentTime = defaultTime(), kind = T.guessKind(T.tmin(currentTime), dayTrs());
-      ctx = { day: cur, kind: kind, time: mealTimeFor(kind), manual: false };
+      var currentTime = defaultTime(), kind = T.guessKind(T.tmin(currentTime), dayTrs()), inst = nearestInst(kind, T.tmin(currentTime), dayRow());
+      ctx = { day: cur, kind: kind, inst: inst, time: slotTime(kind, inst, ''), manual: false };
     }
+    if (!ctx.inst) ctx.inst = 1;
   }
-  function ctxTime() { if (!ctx.manual) ctx.time = mealTimeFor(ctx.kind); return ctx.time; }
+  function ctxTime() { return ctx.time; }
+  function pickCtx(kind, inst, plannedTm) {
+    var tms = ctx && ctx.day === cur && ctx.times ? ctx.times : {}, tm = slotTime(kind, inst, plannedTm);
+    ctx = { day: cur, kind: kind, inst: inst, time: tm, manual: false, times: tms };
+  }
+  function ctxSlot() { return ctx.kind + '#' + (ctx.inst || 1); }
+  /* Auswahlliste für „zu welcher Mahlzeit gehört das“: Mahlzeiten des Tages, Zusatzmahlzeiten und neue Mahlzeit je Art */
+  function slotOptions(selected, r) {
+    var opts = [], seen = {};
+    function add(v, label) { if (seen[v]) return; seen[v] = 1; opts.push([v, label]); }
+    r.match.slots.forEach(function (ms) { add(ms.s.kind + '#' + ms.inst, ms.s.label + (ms.s.time ? ' ' + ms.s.time : '')); });
+    r.match.more.forEach(function (g) { add(g.key, g.label + (g.time ? ' ' + g.time : '')); });
+    var sk = T.slotKind(selected) || (ctx && ctx.kind) || 'mittag', sn = nextInst(sk, r);
+    add(sk + '#' + sn, '+ Neue Mahlzeit (' + T.slotLabel(sk, sn) + ')');
+    if (selected && !seen[selected]) add(selected, T.slotLabel(T.slotKind(selected), T.slotInst(selected)));
+    return opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[0] === selected ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('');
+  }
+  function mealChoiceHtml(r) {
+    var chips = '', labCount = {};
+    r.match.slots.forEach(function (ms) { labCount[ms.s.label] = (labCount[ms.s.label] || 0) + 1; });
+    r.match.slots.forEach(function (ms) {
+      var on = ctx.kind === ms.s.kind && ctx.inst === ms.inst;
+      chips += '<button class="chip' + (on ? ' on' : '') + '" data-a="ctxslot" data-k="' + ms.s.kind + '" data-n="' + ms.inst + '" data-tm="' + esc(ms.s.time) + '" aria-pressed="' + on + '">' + esc(ms.s.label + (labCount[ms.s.label] > 1 ? ' ' + ms.inst : '') + ' · ' + ms.s.time) + '</button>';
+    });
+    r.match.more.forEach(function (g) {
+      var on = ctx.kind === g.kind && ctx.inst === g.inst;
+      chips += '<button class="chip' + (on ? ' on' : '') + '" data-a="ctxslot" data-k="' + g.kind + '" data-n="' + g.inst + '" data-tm="' + esc(g.time) + '" aria-pressed="' + on + '">' + esc(g.label + (g.time ? ' · ' + g.time : '')) + '</button>';
+    });
+    var inList = r.match.slots.some(function (ms) { return ms.s.kind === ctx.kind && ms.inst === ctx.inst; }) || r.match.more.some(function (g) { return g.kind === ctx.kind && g.inst === ctx.inst; });
+    if (!inList) chips += '<button class="chip on" data-a="ctxslot" data-k="' + ctx.kind + '" data-n="' + ctx.inst + '" aria-pressed="true">' + esc(T.slotLabel(ctx.kind, ctx.inst) + ' (neu)') + '</button>';
+    return '<div class="chips" role="group" aria-label="Mahlzeit">' + chips + '</div>' +
+      '<div style="margin-top:10px"><button class="btn ghost sm" data-a="ctxnew" data-k="' + ctx.kind + '">+ Neue Mahlzeit (' + esc(T.slotLabel(ctx.kind, nextInst(ctx.kind, r))) + ')</button></div>';
+  }
+  function moreSlotHtml(g) {
+    var e = sumMacros(g.items), est = T.dayStats(g.items);
+    var vfI = (est.veg >= 1 ? '<li><span>Gemüse</span><b>' + r0(est.veg) + ' g</b></li>' : '') + (est.fruit >= 1 ? '<li><span>Obst</span><b>' + r0(est.fruit) + ' g</b></li>' : '');
+    return '<article class="card slot"><div class="slot-head"><div class="slot-title">' + esc(g.label) + '</div><span class="pill ok"><i></i>zusätzlich</span></div>' +
+      '<div class="si one">' + siCol('ist', 'Ist', g.time, e.c, e.p, e.f, vfI, '', false) + '</div>' + itemsHtml(g.items) +
+      '<button class="btn ghost sm" data-a="logslot" data-k="' + g.kind + '" data-n="' + g.inst + '" data-tm="' + esc(g.time) + '">Mehr eintragen</button></article>';
+  }
   function curLvl() { return (S.profile.lvls || {})[cur] || 3; }
 
   /* ---------- Ansichten ---------- */
@@ -416,7 +498,7 @@
     if (s.veg >= 20) vf += '<li><span>Gemüse</span><b>ca. ' + (Math.round(s.veg / 10) * 10) + ' g</b></li>';
     if (s.fruit >= 20) vf += '<li><span>Obst</span><b>ca. ' + (Math.round(s.fruit / 10) * 10) + ' g</b></li>';
     var vfI = (est.veg >= 1 ? '<li><span>Gemüse</span><b>' + r0(est.veg) + ' g</b></li>' : '') + (est.fruit >= 1 ? '<li><span>Obst</span><b>' + r0(est.fruit) + ' g</b></li>' : '');
-    var btn = '<button class="btn ghost sm" data-a="logslot" data-k="' + s.kind + '" data-tm="' + esc(it.length && sh.ist && !sh.soll ? firstTime(it) || s.time : s.time) + '">' + (it.length ? 'Mehr eintragen' : 'Eintragen') + '</button>';
+    var btn = '<button class="btn ghost sm" data-a="logslot" data-k="' + s.kind + '" data-n="' + (ms.inst || 1) + '" data-tm="' + esc(it.length && sh.ist && !sh.soll ? firstTime(it) || s.time : s.time) + '">' + (it.length ? 'Mehr eintragen' : 'Eintragen') + '</button>';
     var pill = '';
     if (sh.soll && sh.ist) {
       if (it.length && s.c > 0) { var qv = ec / s.c; pill = '<span class="pill ' + (qv >= 0.8 ? 'ok' : qv >= 0.4 ? 'mid' : 'low') + '"><i></i>' + r0(qv * 100) + ' %</span>'; }
@@ -494,6 +576,7 @@
     if (r.mp.some(function (s) { return s.assumed; })) h += '<p class="note" style="margin:0">Für Einheiten ohne Uhrzeit nehme ich 17:00 an. Trage die Uhrzeit im Plan ein, dann passt sich alles an.</p>';
     h += mealToggleHtml();
     r.match.slots.forEach(function (ms) { h += slotHtml(ms, nowMin); });
+    if (mealShow.ist) r.match.more.forEach(function (g) { h += moreSlotHtml(g); });
     if (mealShow.ist && !mealShow.soll && !r.n) h += '<div class="card empty">Noch nichts gegessen. Unter „Soll“ siehst du den Vorschlag, mit „Eintragen“ erfasst du Essen.</div>';
     if (mealShow.ist && r.match.extra.length) {
       h += '<section class="card"><div class="eyebrow">Zusätzlich gegessen</div>' + r.match.extra.map(function (e) { return '<div class="item"><span>' + esc(e.t || '') + ' ' + esc(e.name) + '</span><span>' + r0(e.c) + ' C</span></div>'; }).join('') + '</section>';
@@ -649,21 +732,53 @@
     return h + '</section>';
   }
 
-  function viewLog() {
-    ctxInit(false);
-    var r = T.analyze(model(), cur, cur)[0];
-    var h = dayNav() + bannerHtml();
-    h += '<section class="card"><div class="eyebrow" style="margin-bottom:8px">1. Welche Mahlzeit?</div><div class="chips" role="group" aria-label="Mahlzeit">' +
-      KIND_ORDER.map(function (k) { return '<button class="chip' + (ctx.kind === k ? ' on' : '') + '" data-a="ctxkind" data-k="' + k + '" aria-pressed="' + (ctx.kind === k) + '">' + esc(T.KINDS[k]) + '</button>'; }).join('') + '</div>' +
-      '<div class="form" style="margin-top:12px"><label class="f" for="ctime">2. Uhrzeit<input id="ctime" type="time" value="' + esc(ctx.time) + '"></label>' +
-      '<div class="note" style="align-self:end;padding-bottom:10px">' + (ctx.manual ? 'Du hast die Uhrzeit selbst gesetzt.' : 'Automatisch: die Uhrzeit der Mahlzeit, falls schon etwas eingetragen ist, sonst die aktuelle. Bei Bedarf ändern.') + '</div></div></section>';
-    h += '<section class="card"><label class="f" for="q">3. Was hast du gegessen?<input id="q" type="search" placeholder="z. B. Haferflocken" value="' + esc(q) + '" autocomplete="off"></label><div id="res">' + resultsHtml() + '</div></section>';
+  /* ---------- Essen: Übersicht der Mahlzeiten ---------- */
+  function shortFood(m) {
+    var n = String(m.name || '').split(/[,(\-–\/|]/)[0].trim();
+    if (n.length > 18) n = n.slice(0, 17).trim() + '.';
+    return n + ' ' + r0(m.g) + ' g';
+  }
+  function foodsShort(it) {
+    var l = it.slice(0, 4).map(shortFood).join(' · ');
+    return l + (it.length > 4 ? ' · +' + (it.length - 4) : '');
+  }
+  function mealRows(r) {
+    var rows = [], cnt = {}, seen = {};
+    r.match.slots.forEach(function (ms) { cnt[ms.s.label] = (cnt[ms.s.label] || 0) + 1; });
+    r.match.slots.forEach(function (ms) {
+      var key = ms.s.kind + '#' + (ms.inst || 1);
+      seen[key] = 1;
+      rows.push({ key: key, kind: ms.s.kind, inst: ms.inst || 1, label: ms.s.label + (cnt[ms.s.label] > 1 ? ' ' + ms.inst : ''), time: ms.s.time, at: ms.s.at, items: ms.items, plan: ms.s });
+    });
+    r.match.more.forEach(function (g) {
+      seen[g.key] = 1;
+      rows.push({ key: g.key, kind: g.kind, inst: g.inst, label: g.label, time: g.time, at: g.at, items: g.items, more: true });
+    });
+    pending = pending.filter(function (x) { return x.day === cur && !seen[x.kind + '#' + x.inst]; });
+    pending.forEach(function (x) {
+      rows.push({ key: x.kind + '#' + x.inst, kind: x.kind, inst: x.inst, label: T.slotLabel(x.kind, x.inst), time: x.time, at: T.tmin(x.time), items: [], pend: true });
+    });
+    rows.forEach(function (x) { if (x.at === null || x.at === undefined) x.at = 9999; });
+    rows.sort(function (a, b) { return a.at - b.at; });
+    return rows;
+  }
+  function rowEditHtml(it, key, r) {
+    var ids = it.map(function (x) { return x.id; }).join(',');
+    return '<div class="medit"><div class="d2"><input type="time" class="etime" data-mids="' + ids + '" value="' + esc(firstTime(it)) + '" aria-label="Uhrzeit der Mahlzeit"><select class="ekind" data-mids="' + ids + '" aria-label="Mahlzeit">' + slotOptions(key, r) + '</select></div>' +
+      '<div class="d2"><button class="chip" data-a="saveset" data-ids="' + ids + '">Als Mahlzeit speichern</button></div><div class="items">' +
+      it.map(function (m) {
+        return '<div class="item ed"><span class="iname">' + esc(m.name) + '</span><span class="ictl"><input class="eg" type="number" inputmode="decimal" min="1" max="5000" step="1" data-mgram="' + m.id + '" value="' + r0(m.g) + '" aria-label="Menge in Gramm für ' + esc(m.name) + '"> g · <select class="ekind mv" data-mid1="' + m.id + '" aria-label="Zu anderer Mahlzeit verschieben">' + slotOptions(r.match.keyOf[m.id] || key, r) + '</select></span><span>' + r0(m.c) + ' C <button class="x" data-a="delmeal" data-id="' + m.id + '" aria-label="Eintrag löschen">×</button></span></div>';
+      }).join('') + '</div></div>';
+  }
+  function addPanelHtml() {
+    var h = '<div class="mpanel"><div class="form"><label class="f" for="ctime">Uhrzeit<input id="ctime" type="time" value="' + esc(ctx.time) + '"></label></div>';
+    h += '<label class="f" for="q">Lebensmittel suchen<input id="q" type="search" placeholder="z. B. Haferflocken" value="' + esc(q) + '" autocomplete="off"></label><div id="res">' + resultsHtml() + '</div>';
     if (sel) {
       h += '<section class="card sel" id="selcard"><b>' + esc(sel.n) + '</b><div class="note">' + r0(sel.k) + ' kcal · ' + de(sel.c, 1) + ' C · ' + de(sel.p, 1) + ' P · ' + de(sel.f, 1) + ' F · ' + de(sel.fi || 0, 1) + ' Ballaststoffe je 100 g</div>' +
         '<div class="form" style="margin-top:10px"><label class="f" for="g">Menge in g<input id="g" type="number" inputmode="decimal" min="1" value="' + selG + '"></label>' +
         (S.custom.some(function (x) { return x.id === sel.id; }) ? '<label class="f" for="sel-fi">Ballaststoffe je 100 g' + (sel.fiMiss ? ' (fehlt bei Open Food Facts, bitte ergänzen)' : '') + '<input id="sel-fi" type="number" inputmode="decimal" min="0" step="0.1" value="' + (sel.fi || 0) + '"></label>' : '') +
         '<div class="chips" style="align-self:end"><button class="chip" data-a="portion" data-m="0.5">½ ' + esc(sel.pn) + '</button><button class="chip" data-a="portion" data-m="1">1 ' + esc(sel.pn) + ' (' + sel.pg + ' g)</button><button class="chip" data-a="portion" data-m="2">2×</button></div></div>' +
-        '<div class="note" id="selprev">' + selPreview() + '</div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn" data-a="addmeal">Zu ' + esc(T.KINDS[ctx.kind]) + ' hinzufügen</button><button class="btn ghost" data-a="cancelsel">Abbrechen</button></div></section>';
+        '<div class="note" id="selprev">' + selPreview() + '</div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn" data-a="addmeal">Zu ' + esc(T.slotLabel(ctx.kind, ctx.inst)) + ' hinzufügen</button><button class="btn ghost" data-a="cancelsel">Abbrechen</button></div></section>';
     }
     if ((S.profile.sets || []).length) h += '<details class="card"><summary><b>Gespeicherte Mahlzeiten verwalten</b></summary>' + S.profile.sets.map(function (x) { return '<div class="item"><span>' + esc(x.title) + ' · ' + x.items.map(function (i) { return esc(i.name) + ' ' + r0(i.g) + ' g'; }).join(', ') + '</span><button class="x" data-a="delset" data-id="' + esc(x.id) + '" aria-label="Mahlzeit löschen">×</button></div>'; }).join('') + '</details>';
     h += barcodeCard();
@@ -673,17 +788,45 @@
       '<label class="f" for="c-p">Eiweiß je 100 g<input id="c-p" type="number" inputmode="decimal" min="0" value="0"></label><label class="f" for="c-f">Fett je 100 g<input id="c-f" type="number" inputmode="decimal" min="0" value="0"></label>' +
       '<label class="f" for="c-fi">Ballaststoffe je 100 g<input id="c-fi" type="number" inputmode="decimal" min="0" step="0.1" value="0"></label>' +
       '<label class="f full" for="c-g">Zählt als<select id="c-g"><option value="">Sonstiges</option><option value="G">Gemüse</option><option value="O">Obst</option></select></label>' +
-      '<button class="btn full" type="submit">Speichern und auswählen</button></form></details>';
-
-    h += '<div class="sec-head"><h2>Gegessen am ' + esc(T.dayLabel(cur)) + '</h2><span class="note">' + r0(r.st.c) + ' von ' + r.t.c + ' g Carbs</span></div>' + (r.groups.length ? T.pieLegend() : '');
-    if (!r.groups.length) h += '<div class="card empty">Noch nichts eingetragen.</div>';
-    r.groups.forEach(function (g) {
-      var ids = g.items.map(function (x) { return x.id; }).join(','), rl = T.relLabel(g.time, r.sess);
-      h += '<article class="card grp"><div class="slot-top"><div class="slot-main"><div class="slot-title">' + esc(T.KINDS[g.kind] || g.kind) + '</div><div class="slot-sub">' + r0(g.c) + ' C · ' + r0(g.p) + ' P · ' + r0(g.f) + ' F · ' + r0(g.kcal) + ' kcal</div>' + (rl ? '<div class="slot-sub">' + esc(rl) + '</div>' : '') + '</div>' +
-        '<div class="pie-box">' + T.pieSvg(g.c, g.p, g.f, 48) + '<div class="pie-cap">' + esc(T.pieCaption(g.c, g.p, g.f)) + '</div></div></div>' +
-        '<div class="d2"><input type="time" class="etime" data-mids="' + ids + '" value="' + esc(g.time) + '" aria-label="Uhrzeit der Mahlzeit"><select class="ekind" data-mids="' + ids + '" aria-label="Mahlzeit">' + kindOptions(g.kind) + '</select></div>' +
-        '<div class="d2"><button class="chip" data-a="saveset" data-ids="' + ids + '">Als Mahlzeit speichern</button></div><div class="items">' + g.items.map(function (m) { return '<div class="item ed"><span class="iname">' + esc(m.name) + '</span><span class="ictl"><input class="eg" type="number" inputmode="decimal" min="1" max="5000" step="1" data-mgram="' + m.id + '" value="' + r0(m.g) + '" aria-label="Menge in Gramm für ' + esc(m.name) + '"> g · <select class="ekind mv" data-mid1="' + m.id + '" aria-label="Zu anderer Mahlzeit verschieben">' + kindOptions(g.kind) + '</select></span><span>' + r0(m.c) + ' C <button class="x" data-a="delmeal" data-id="' + m.id + '" aria-label="Eintrag löschen">×</button></span></div>'; }).join('') + '</div></article>';
-    });
+      '<button class="btn full" type="submit">Speichern und auswählen</button></form></details></div>';
+    return h;
+  }
+  function mealRowHtml(x, r) {
+    var open = openKey === x.key, it = x.items, h = '';
+    var rid = 'row-' + x.key.replace('#', '-');
+    h += '<article class="card eat' + (open ? ' open' : '') + '" id="' + rid + '"><div class="eat-head"><div class="eat-main"><div class="slot-title">' + esc(x.label) + '</div><div class="eat-time">' + esc(x.time || '') + (x.plan && x.plan.c > 0 && !it.length ? ' · Ziel ca. ' + r0(x.plan.c) + ' g Carbs' : '') + '</div></div>' +
+      (x.pend && !open ? '<button class="x" data-a="nmdrop" data-key="' + esc(x.key) + '" aria-label="Mahlzeit entfernen">×</button>' : '') +
+      '<button class="plus' + (open ? ' on' : '') + '" data-a="openmeal" data-k="' + x.kind + '" data-n="' + x.inst + '" data-tm="' + esc(x.time || '') + '" aria-expanded="' + open + '" aria-label="' + (open ? 'Schließen' : 'Zu ' + esc(x.label) + ' hinzufügen') + '">' + (open ? '–' : '+') + '</button></div>';
+    if (it.length) {
+      var e = sumMacros(it), kc = 4 * e.c + 4 * e.p + 9 * e.f;
+      h += '<div class="eat-sum"><div class="eat-macros"><span class="c">' + r0(e.c) + ' C</span><span class="p">' + r0(e.p) + ' P</span><span class="f">' + r0(e.f) + ' F</span><span class="k">' + r0(kc) + ' kcal</span></div><div class="eat-foods">' + esc(foodsShort(it)) + '</div>' +
+        '<div><button class="chip" data-a="editrow" data-key="' + esc(x.key) + '" aria-expanded="' + !!editRow[x.key] + '">' + (editRow[x.key] ? 'Zuklappen' : 'Bearbeiten') + '</button></div></div>';
+      if (editRow[x.key]) h += rowEditHtml(it, x.key, r);
+    }
+    if (open) h += addPanelHtml();
+    return h + '</article>';
+  }
+  function newMealHtml() {
+    if (!nmForm) return '<button class="btn addbig" data-a="nmopen">Mahlzeit hinzufügen</button>';
+    var chips = KIND_ORDER.map(function (k) { return '<button class="chip' + (nmForm.kind === k ? ' on' : '') + '" data-a="nmkind" data-k="' + k + '" aria-pressed="' + (nmForm.kind === k) + '">' + esc(T.KINDS[k]) + '</button>'; }).join('');
+    return '<section class="card nmform"><div class="eyebrow">Mahlzeit hinzufügen</div><div class="chips" role="group" aria-label="Art der Mahlzeit">' + chips + '</div>' +
+      '<div class="form"><label class="f" for="nm-time">Uhrzeit<input id="nm-time" type="time" value="' + esc(nmForm.time) + '"></label></div>' +
+      '<div style="display:flex;gap:8px"><button class="btn" data-a="nmadd">In Übersicht einfügen</button><button class="btn ghost" data-a="nmcancel">Abbrechen</button></div></section>';
+  }
+  function viewLog() {
+    ctxInit(false);
+    if (openKey && ctxSlot() !== openKey) pickCtx(T.slotKind(openKey), T.slotInst(openKey), '');
+    var r = T.analyze(model(), cur, cur)[0];
+    var h = dayNav() + bannerHtml();
+    h += '<div class="sec-head"><h2>Essen</h2><span class="note">' + r0(r.st.c) + ' von ' + r.t.c + ' g Carbs</span></div>';
+    mealRows(r).forEach(function (x) { h += mealRowHtml(x, r); });
+    if (r.match.extra.length) {
+      var ex = r.match.extra;
+      h += '<article class="card eat"><div class="eat-head"><div class="eat-main"><div class="slot-title">Nicht zugeordnet</div><div class="eat-time">Bitte einer Mahlzeit zuweisen</div></div></div>' +
+        '<div class="eat-sum"><div class="eat-foods">' + esc(foodsShort(ex)) + '</div><div><button class="chip" data-a="editrow" data-key="extra#1" aria-expanded="' + !!editRow['extra#1'] + '">' + (editRow['extra#1'] ? 'Zuklappen' : 'Bearbeiten') + '</button></div></div>' +
+        (editRow['extra#1'] ? rowEditHtml(ex, '', r) : '') + '</article>';
+    }
+    h += newMealHtml();
     return h;
   }
 
@@ -758,6 +901,7 @@
     var pctNow = T.macroPct(p) || { p: r0(400 * autoRest.p / autoRest.kcal), f: r0(900 * autoRest.f / autoRest.kcal) };
     pctNow.c = 100 - pctNow.p - pctNow.f;
     var h = '<div class="top"><div><div class="brand">Profil</div><div class="date">Grundumsatz ca. ' + r0(T.bmr(p)) + ' kcal</div></div></div>' + bannerHtml();
+    h += designHtml();
     h += '<form class="card form" id="profform" onsubmit="return false">' +
       '<label class="f" for="p-w">Gewicht (kg)<input id="p-w" type="number" inputmode="decimal" min="35" max="200" value="' + p.w + '"></label>' +
       '<label class="f" for="p-h">Größe (cm)<input id="p-h" type="number" inputmode="numeric" min="120" max="230" value="' + p.h + '"></label>' +
@@ -812,6 +956,11 @@
     return h;
   }
 
+  function focusRow() {
+    var el = document.getElementById('row-' + openKey.replace('#', '-'));
+    if (el) el.scrollIntoView({ block: 'start' });
+    var qi = document.getElementById('q'); if (qi) { try { qi.focus({ preventScroll: true }); } catch (e) {} }
+  }
   function render() {
     var app = document.getElementById('app');
     app.innerHTML = view === 'heute' ? viewHeute() : view === 'plan' ? viewPlan() : view === 'log' ? viewLog() : view === 'aus' ? viewAus() : viewProfil();
@@ -824,8 +973,9 @@
   document.addEventListener('click', function (e) {
     var b = e.target.closest('[data-a]'); if (!b) return;
     var a = b.dataset.a, d = b.dataset;
+    if (a === 'design') { design = d.v; try { localStorage.setItem('tankplan.design', design); } catch (er) {} applyDesign(); render(); return; }
     if (a === 'tab') { view = d.t; render(); window.scrollTo(0, 0); return; }
-    if (a === 'day') { cur = d.d === '0' ? T.today() : T.addDays(cur, +d.d); render(); return; }
+    if (a === 'day') { cur = d.d === '0' ? T.today() : T.addDays(cur, +d.d); openKey = ''; nmForm = null; pending = []; sel = null; q = ''; render(); return; }
     if (a === 'range') { range = +d.n; render(); return; }
     if (a === 'lvl') { S.profile.lvls[cur] = +d.n; S.profileU = Date.now(); save(); render(); return; }
     if (a === 'goal') { S.profile.goal = d.g; S.profileU = Date.now(); save(); render(); return; }
@@ -844,8 +994,8 @@
     if (a === 'addset') {
       var st = S.profile.sets.filter(function (x) { return x.id === d.id; })[0]; if (!st) return;
       ctxInit(false);
-      st.items.forEach(function (it) { var m = Object.assign({}, it, { id: uid(), day: cur, t: ctxTime(), slot: ctx.kind, u: Date.now() }); S.meals.push(m); });
-      q = ''; save(); render(); flash('„' + st.title + '“ zu ' + T.KINDS[ctx.kind] + ' hinzugefügt.'); return;
+      st.items.forEach(function (it) { var m = Object.assign({}, it, { id: uid(), day: cur, t: ctxTime(), slot: ctxSlot(), u: Date.now() }); S.meals.push(m); });
+      q = ''; save(); render(); flash('„' + st.title + '“ zu ' + T.slotLabel(ctx.kind, ctx.inst) + ' hinzugefügt.'); return;
     }
     if (a === 'delset') { S.profile.sets = S.profile.sets.filter(function (x) { return x.id !== d.id; }); S.profileU = Date.now(); save(); render(); return; }
     if (a === 'resetmacros') { delete S.profile.macroPct; S.profileU = Date.now(); save(); render(); return; }
@@ -899,8 +1049,27 @@
     if (a === 'delact') { S.acts = S.acts.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'acts', id: d.id }); save(); render(); return; }
     if (a === 'delplan') { S.plan = S.plan.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'plan', id: d.id }); save(); render(); return; }
     if (a === 'delmeal') { S.meals = S.meals.filter(function (x) { return x.id !== d.id; }); S.del.push({ t: 'meals', id: d.id }); save(); render(); return; }
-    if (a === 'logslot') { ctx = { day: cur, kind: d.k, time: d.tm, auto: false }; view = 'log'; sel = null; q = ''; render(); window.scrollTo(0, 0); return; }
-    if (a === 'ctxkind') { ctxInit(false); if (ctx.kind !== d.k) { ctx.kind = d.k; ctx.manual = false; ctx.time = mealTimeFor(d.k); } render(); return; }
+    if (a === 'logslot') { pickCtx(d.k, +d.n || 1, d.tm); openKey = d.k + '#' + (+d.n || 1); view = 'log'; sel = null; q = ''; render(); focusRow(); return; }
+    if (a === 'ctxslot') { pickCtx(d.k, +d.n || 1, d.tm); render(); return; }
+    if (a === 'ctxnew') { pickCtx(d.k, nextInst(d.k, dayRow()), ''); render(); return; }
+    if (a === 'openmeal') {
+      var okey = d.k + '#' + (+d.n || 1);
+      sel = null; q = '';
+      if (openKey === okey) { openKey = ''; render(); return; }
+      pickCtx(d.k, +d.n || 1, d.tm); openKey = okey; render(); focusRow(); return;
+    }
+    if (a === 'editrow') { editRow[d.key] = !editRow[d.key]; render(); return; }
+    if (a === 'nmopen') { nmForm = { kind: T.guessKind(T.tmin(defaultTime()), dayTrs()), time: defaultTime() }; render(); var nf = document.getElementById('nm-time'); if (nf) nf.scrollIntoView({ block: 'center' }); return; }
+    if (a === 'nmkind') { nmForm.kind = d.k; render(); return; }
+    if (a === 'nmcancel') { nmForm = null; render(); return; }
+    if (a === 'nmdrop') { pending = pending.filter(function (x) { return x.kind + '#' + x.inst !== d.key; }); if (openKey === d.key) openKey = ''; render(); return; }
+    if (a === 'nmadd') {
+      if (!nmForm) return;
+      var nk = nmForm.kind, ni = nextInst(nk, dayRow()), ntm = nmForm.time || defaultTime(), nkey = nk + '#' + ni;
+      pending.push({ day: cur, kind: nk, inst: ni, time: ntm });
+      pickCtx(nk, ni, ntm); ctx.time = ntm; ctx.times = ctx.times || {}; ctx.times[nkey] = ntm;
+      openKey = nkey; nmForm = null; sel = null; q = ''; render(); focusRow(); return;
+    }
     if (a === 'pick') {
       sel = allFoods().filter(function (f) { return f.n === d.n; })[0] || null;
       if (sel) selG = sel.pg;
@@ -914,7 +1083,7 @@
       if (!sel || !(selG > 0)) return;
       ctxInit(false);
       var tm = ctxTime();
-      var m = T.mealFrom(sel, selG, cur, tm, ctx.kind); m.id = uid(); m.u = Date.now(); S.meals.push(m);
+      var m = T.mealFrom(sel, selG, cur, tm, ctxSlot()); m.id = uid(); m.u = Date.now(); S.meals.push(m);
       sel = null; q = ''; save(); render(); return;
     }
     if (a === 'barcodeStart') { startBarcodeScanner(); return; }
@@ -1037,7 +1206,8 @@
     }
     if (el.dataset && el.dataset.mid1) {
       var mv = S.meals.filter(function (x) { return x.id === el.dataset.mid1; })[0]; if (!mv) return;
-      mv.slot = v; mv.t = mealTimeFor(v, [mv.id]); mv.u = Date.now(); save(); render(); flash('Verschoben zu ' + T.KINDS[v] + ' (' + mv.t + ' Uhr).'); return;
+      var oth = S.meals.filter(function (x) { return x.day === mv.day && x.id !== mv.id && x.slot === v && x.t; }).sort(function (x, y) { return x.t < y.t ? 1 : -1; });
+      mv.slot = v; if (oth.length) mv.t = oth[0].t; mv.u = Date.now(); save(); render(); flash('Verschoben zu ' + T.slotLabel(T.slotKind(v), T.slotInst(v)) + ' (' + mv.t + ' Uhr).'); return;
     }
     if (el.dataset && el.dataset.mids) {
       var ids = el.dataset.mids.split(',');
@@ -1051,7 +1221,8 @@
     if (id === 'xfrom' || id === 'xto') { if (v) { if (id === 'xfrom') xFrom = v; else xTo = v; } render(); return; }
     if (id === 'planlib') { var lb = S.profile.lib.filter(function (x) { return x.id === v; })[0]; if (lb) { planTitle = lb.title; planDesc = lb.descr; } else { planTitle = ''; planDesc = ''; } render(); return; }
     if (id === 'planupd') { planUpd = el.checked; var pv = document.getElementById('planprev'); if (pv) pv.innerHTML = planPreview(); return; }
-    if (id === 'ctime') { ctxInit(false); if (v) { ctx.time = v; ctx.manual = true; } render(); return; }
+    if (id === 'nm-time') { if (nmForm && v) nmForm.time = v; return; }
+    if (id === 'ctime') { ctxInit(false); if (v) { ctx.time = v; ctx.manual = true; ctx.times = ctx.times || {}; ctx.times[ctxSlot()] = v; } render(); return; }
     if (id === 'sel-fi') {
       var cf2 = S.custom.filter(function (x) { return sel && x.id === sel.id; })[0]; if (!cf2) return;
       delete cf2.fiMiss; cf2.u = Date.now(); var fixN = 0;

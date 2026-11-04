@@ -167,7 +167,7 @@ details.day summary::-webkit-details-marker { display: none; }
 .scanner-error { color: var(--low); font-weight: 600; }
 .lvl-difference { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
 .card { box-shadow: 0 4px 18px rgba(25, 55, 43, .04); }
-.hero { background: linear-gradient(135deg, #176B55, #25836A); box-shadow: none; }
+.hero { background: linear-gradient(135deg, var(--accent), var(--accent2, #25836A)); box-shadow: none; }
 .btn:not(:disabled):hover { filter: brightness(.96); }
 .daynav button:hover, .chip:hover, .btn.ghost:hover { background-color: var(--track); }
 @media (prefers-reduced-motion: no-preference) { .card { animation: card-in .25s ease-out both; } }
@@ -296,3 +296,74 @@ svg .w-pt { fill: var(--surface); stroke: var(--ink); stroke-width: 1.5; }
 
 .res.off button { flex-wrap: wrap; gap: 2px 10px; }
 .res.off button span { flex-basis: 100%; white-space: normal; }
+
+/* Essen-Übersicht */
+.eat { padding: 0; overflow: hidden; }
+.eat-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; }
+.eat-main { flex: 1; min-width: 0; }
+.eat-time { font-family: var(--f-data); font-size: 12.5px; color: var(--muted); }
+.plus { width: 44px; height: 44px; flex: none; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); font-size: 26px; line-height: 1; font-weight: 500; }
+.plus.on { background: var(--track); color: var(--ink); border: 1px solid var(--line); }
+.eat-sum { padding: 0 16px 14px; display: grid; gap: 6px; justify-items: start; }
+.eat-macros { font-family: var(--f-data); font-size: 13px; display: flex; gap: 12px; flex-wrap: wrap; }
+.eat-macros .c { color: var(--carb); } .eat-macros .p { color: var(--prot); } .eat-macros .f { color: var(--fat); } .eat-macros .k { color: var(--muted); }
+.eat-foods { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.mpanel { border-top: 1px solid var(--line); background: var(--bg); padding: 14px 16px; display: grid; gap: 12px; }
+.mpanel .card { box-shadow: none; }
+.medit { border-top: 1px solid var(--line); padding: 12px 16px 14px; display: grid; gap: 10px; }
+.btn.addbig { width: 100%; padding: 16px; font-size: 16px; border-radius: 14px; }
+.nmform { display: grid; gap: 12px; }
+.eat-head .plus { margin-left: auto; }
+.mpanel { grid-template-columns: minmax(0, 1fr); }
+.mpanel > *, .medit > * { min-width: 0; }
+.medit { grid-template-columns: minmax(0, 1fr); }
+.eat-sum { grid-template-columns: minmax(0, 1fr); }
+
+/* Design-Auswahl */
+.dsg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.dsg-o { display: grid; gap: 4px; justify-items: start; text-align: left; padding: 10px; border: 2px solid var(--line); border-radius: 14px; background: var(--bg); color: var(--ink); }
+.dsg-o[aria-pressed="true"] { border-color: var(--accent); }
+.dsg-o small { color: var(--muted); font-size: 12px; line-height: 1.3; }
+.dsg-sw { display: flex; width: 100%; height: 34px; border-radius: 10px; overflow: hidden; border: 1px solid rgba(0,0,0,.12); }
+.dsg-sw i { flex: 1; }
+
+/* Design „Waldgrün“: Creme, Tannengrün, runde Karten */
+html[data-design="wald"] {
+  --bg: #F1E4D0; --surface: #FBF4E8; --ink: #23382C; --muted: #66755F; --line: #E3D3B8;
+  --accent: #2F5D45; --accent2: #3F7757; --accent-ink: #FBF4E8; --track: #E8D9BF;
+  --carb: #C77E14; --prot: #2F7D5F; --fat: #B8566B;
+}
+html[data-design="wald"] .card, html[data-design="wald"] .tile { border: 0; border-radius: 24px; box-shadow: 0 8px 24px rgba(70, 50, 20, .10); }
+html[data-design="wald"] .btn { border-radius: 999px; }
+html[data-design="wald"] .plus { box-shadow: 0 4px 10px rgba(47, 93, 69, .35); }
+html[data-design="wald"] nav { background: var(--accent); border: 0; border-radius: 26px 26px 0 0; }
+html[data-design="wald"] nav button { color: rgba(251, 244, 232, .72); border-radius: 999px; }
+html[data-design="wald"] nav button[aria-current="page"] { background: #F1E4D0; color: var(--accent); }
+
+/* Design „Nebel“: Blaugrau, weiche Karten, Serifen */
+html[data-design="nebel"] {
+  --f-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --bg: #B9C8CE; --surface: #DCE4E7; --ink: #22323B; --muted: #4F626B; --line: #A9BAC1;
+  --accent: #55728A; --accent2: #6F8CA0; --accent-ink: #FFFFFF; --track: #C7D4D9;
+  --carb: #A9650B; --prot: #25756A; --fat: #AD4D63;
+}
+html[data-design="nebel"] .card, html[data-design="nebel"] .tile { border: 0; border-radius: 22px; box-shadow: 7px 7px 16px rgba(60, 84, 96, .28), -5px -5px 12px rgba(255, 255, 255, .45); }
+html[data-design="nebel"] .btn, html[data-design="nebel"] .chip { box-shadow: 3px 3px 8px rgba(60, 84, 96, .25), -2px -2px 6px rgba(255, 255, 255, .4); }
+html[data-design="nebel"] .btn.ghost { box-shadow: none; }
+html[data-design="nebel"] .btn { border-radius: 14px; }
+html[data-design="nebel"] input, html[data-design="nebel"] select, html[data-design="nebel"] textarea { background: #E8EEF0; border-color: #B4C3C9; }
+html[data-design="nebel"] nav { border-top: 0; border-radius: 22px 22px 0 0; box-shadow: 0 -6px 16px rgba(60, 84, 96, .18); }
+html[data-design="nebel"] nav button[aria-current="page"] { border-radius: 14px; }
+
+/* Design „Espresso“: dunkel mit Kupfer, Serifen */
+html[data-design="kaffee"] {
+  color-scheme: dark;
+  --f-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --bg: #2A2025; --surface: #392C33; --ink: #F3E6D8; --muted: #BBA798; --line: #4F4047;
+  --accent: #C98F5E; --accent2: #A9744A; --accent-ink: #2A2025; --track: #4A3B43;
+  --carb: #E8A84F; --prot: #5FC4AA; --fat: #EE8FA5; --ok: #5FC48A; --mid: #E8B04F; --low: #F07A7A;
+}
+html[data-design="kaffee"] .card, html[data-design="kaffee"] .tile { border-radius: 20px; box-shadow: 0 8px 22px rgba(0, 0, 0, .28); }
+html[data-design="kaffee"] .btn { border-radius: 10px; }
+html[data-design="kaffee"] .hero { color: var(--accent-ink); }
+html[data-design="kaffee"] nav { background: #241A1F; }
