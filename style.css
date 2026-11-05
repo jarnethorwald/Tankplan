@@ -367,3 +367,51 @@ html[data-design="kaffee"] .card, html[data-design="kaffee"] .tile { border-radi
 html[data-design="kaffee"] .btn { border-radius: 10px; }
 html[data-design="kaffee"] .hero { color: var(--accent-ink); }
 html[data-design="kaffee"] nav { background: #241A1F; }
+
+/* Individuelle Regeln */
+.rl-step { margin-bottom: 4px; }
+.rl-prev { margin-top: 12px; padding: 12px; border: 1px solid var(--accent); border-radius: 12px; background: var(--bg); display: grid; gap: 8px; }
+.rl-prev ul, .rl-act { margin: 0; padding-left: 18px; font-size: 13.5px; display: grid; gap: 3px; }
+.rl-act { margin-bottom: 10px; }
+textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 10px 11px; width: 100%; min-width: 0; font-size: 14px; font-family: var(--f-data); }
+
+/* Gemüse/Obst gegart */
+.cook { font-style: normal; font-size: 11px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; margin-left: 4px; white-space: nowrap; }
+.chip.cookbtn { padding: 2px 8px; font-size: 11px; margin-left: 4px; }
+
+/* v28: Mahlzeit als Grafik exportieren */
+.slot-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.exp { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 0; }
+.exp:active { background: var(--track); }
+html.xo-lock, html.xo-lock body { overflow: hidden; }
+.xo { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; background: var(--bg); color: var(--ink); font-family: var(--f-body); padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+.xo-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-family: var(--f-display); font-stretch: 112%; font-size: 17px; }
+.xo-bar .x { font-size: 30px; min-width: 44px; min-height: 44px; }
+.xo-prev { flex: none; height: 40vh; min-height: 210px; max-height: 460px; display: grid; place-items: center; background: var(--track); overflow: hidden; }
+.xo-cv { line-height: 0; box-shadow: 0 6px 24px rgba(0, 0, 0, .22); border-radius: 4px; overflow: hidden; }
+.xo-cv.chk { background: repeating-conic-gradient(#d9d9d9 0 25%, #ffffff 0 50%) 0 0 / 22px 22px; }
+.xo-cv canvas { display: block; touch-action: none; }
+.xo-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px 20px; display: grid; gap: 16px; align-content: start; width: 100%; max-width: 560px; margin: 0 auto; }
+.xo-sec { display: grid; gap: 8px; min-width: 0; }
+.xo-sw { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.xo-s { display: grid; gap: 4px; justify-items: center; padding: 6px 4px; border: 2px solid transparent; border-radius: 12px; background: var(--surface); font-size: 11.5px; line-height: 1.2; }
+.xo-s[aria-pressed="true"] { border-color: var(--accent); }
+.xo-chip { display: flex; align-items: center; justify-content: center; gap: 4px; width: 100%; height: 36px; border-radius: 8px; border: 1px solid var(--line); }
+.xo-chip i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.xo-ph { display: flex; gap: 8px; flex-wrap: wrap; }
+.xo-file { position: relative; display: inline-flex; align-items: center; cursor: pointer; overflow: hidden; }
+.xo-file input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; font-size: 0; }
+.xo-chk { display: flex; align-items: center; gap: 10px; font-size: 14.5px; min-height: 36px; }
+.xo-chk input { width: 20px; height: 20px; accent-color: var(--accent); }
+.xo .seg button:disabled { opacity: .4; }
+.xo input[type="range"] { width: 100%; accent-color: var(--accent); }
+.xo-foot { flex: none; border-top: 1px solid var(--line); background: var(--surface); padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); display: grid; gap: 8px; }
+.xo-st { font-size: 12.5px; color: var(--muted); min-height: 16px; text-align: center; }
+.xo-btns { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; max-width: 560px; width: 100%; margin: 0 auto; }
+@media (min-width: 900px) {
+  .xo { flex-direction: row; flex-wrap: wrap; }
+  .xo-bar { width: 100%; }
+  .xo-prev { flex: 1 1 55%; height: auto; max-height: none; min-height: 0; }
+  .xo-body { flex: 1 1 40%; }
+  .xo-foot { width: 100%; }
+}

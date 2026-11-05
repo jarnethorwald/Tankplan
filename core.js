@@ -354,11 +354,12 @@
 
   /* ---------- Auswertung ---------- */
   function dayStats(meals) {
-    var s = { c: 0, p: 0, f: 0, k: 0, fi: 0, veg: 0, fruit: 0, vit: { C: 0, A: 0, K: 0, F: 0, E: 0 }, cols: {} };
+    var s = { c: 0, p: 0, f: 0, k: 0, fi: 0, veg: 0, fruit: 0, vegCook: 0, fruitCook: 0, vit: { C: 0, A: 0, K: 0, F: 0, E: 0 }, cols: {} };
     meals.forEach(function (m) {
       s.c += m.c; s.p += m.p; s.f += m.f; s.k += m.kcal; s.fi += m.fi || 0;
       if (m.grp === 'G') s.veg += m.g;
       if (m.grp === 'O') s.fruit += m.g;
+      if (m.cook === 'g') { if (m.grp === 'G') s.vegCook += m.g; if (m.grp === 'O') s.fruitCook += m.g; }
       String(m.vit || '').split('').forEach(function (ch) { if (s.vit[ch] !== undefined) s.vit[ch] += m.g; });
       if (m.col && (m.grp === 'G' || m.grp === 'O')) s.cols[m.col] = 1;
     });
@@ -389,7 +390,7 @@
 
   /* ---------- Mahlzeitenplan ---------- */
   var DEF_MT = { b: '07:30', l: '12:30', d: '19:00', s: '15:30' };
-  var KINDS = { frueh: 'Frühstück', mittag: 'Mittagessen', abend: 'Abendessen', snack: 'Snack', pre: 'Vor dem Training', during: 'Beim Training', post: 'Nach dem Training' };
+  var KINDS = { frueh: 'Frühstück', mittag: 'Mittagessen', abend: 'Abendessen', snack: 'Snack', pre: 'Vor dem Training', during: 'Beim Training', post: 'Nach dem Training', shake: 'Shake', extra: 'Zusatz' };
   /* Mahlzeit-Zuordnung: slot = "art" (alt) oder "art#nr" (neu). nr zählt gleiche Arten am Tag, z. B. nach dem Training #1 und #2 oder mittag#2 für ein zweites Mittagessen. */
   function slotKind(s) { return s ? String(s).split('#')[0] : ''; }
   function slotInst(s) { var n = s ? parseInt(String(s).split('#')[1], 10) : 0; return n > 0 ? n : 0; }
@@ -402,6 +403,220 @@
   function tmin(s) { var m = /^(\d{1,2}):(\d{2})/.exec(s || ''); return m ? +m[1] * 60 + +m[2] : null; }
   function tfmt(m) { m = Math.round(m / 5) * 5; m = ((m % 1440) + 1440) % 1440; return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
   function hmText(min) { min = Math.max(0, Math.round(min / 5) * 5); var h = Math.floor(min / 60), m = min % 60; return h ? (m ? h + ' h ' + m + ' min' : h + ' h') : m + ' min'; }
+
+  /* ---------- Individuelle Regeln (von einer KI aus normaler Sprache in diesen Block übersetzt) ---------- */
+  var RL_KINDS = ['frueh', 'mittag', 'abend', 'snack', 'pre', 'post'];
+  var TIMING_DEF = { preOffset: 60, preOffsetBig: 150, preEarliest: 180, preLatest: 45, postDelay: 30, postWindow: 90 };
+  var TIMING_LIM = { preOffset: [15, 240], preOffsetBig: [15, 240], preEarliest: [30, 300], preLatest: [10, 120], postDelay: [0, 180], postWindow: [30, 240] };
+  var TIMING_TXT = { preOffset: 'Wunschabstand Mahlzeit vor kurzen/leichten Einheiten (min)', preOffsetBig: 'Wunschabstand Mahlzeit vor langen/harten Einheiten (min)', preEarliest: 'früheste Mahlzeit vor dem Training (min vorher)', preLatest: 'späteste Mahlzeit vor dem Training (min vorher)', postDelay: 'Mahlzeit nach dem Training (min nach Ende)', postWindow: 'Essenszeit gilt als „nach dem Training“ bis (min nach Ende)' };
+  var SHAKE_DEF = { easy: { c: 20, p: 10 }, mid: { c: 50, p: 25 }, hard: { c: 90, p: 40 }, long: { c: 70, p: 30 } };
+  var SHAKE_TXT = { easy: 'locker (LIT, unter 150 min)', mid: 'mittel (Tempo/Sweetspot)', hard: 'hart (HIT)', long: 'sehr lang (ab 150 min)' };
+  var MEAL_TXT = { frueh: 'Frühstück', mittag: 'Mittagessen', abend: 'Abendessen', snack: 'Snack', pre: 'Mahlzeit vor dem Training', post: 'Mahlzeit nach dem Training' };
+  function rnum(v) { if (typeof v === 'string') v = v.replace(',', '.'); if (v === null || v === '' || typeof v === 'boolean') return null; v = Number(v); return isFinite(v) ? v : null; }
+  function rclamp(v, lo, hi, msgs, label) {
+    var n = rnum(v);
+    if (n === null) { msgs.push(label + ': keine Zahl, ignoriert.'); return null; }
+    var c = Math.min(hi, Math.max(lo, n));
+    if (c !== n) msgs.push(label + ': ' + n + ' auf ' + c + ' begrenzt (erlaubt ' + lo + ' bis ' + hi + ').');
+    return Math.round(c * 100) / 100;
+  }
+  function rbool(v) { return v === true || v === 'true' || v === 'ja' ? true : v === false || v === 'false' || v === 'nein' ? false : null; }
+  /* Nimmt Text (mit oder ohne ```-Zeichen) oder ein Objekt, liefert { rules, msgs }. rules ist null, wenn nichts Brauchbares drinsteht. */
+  function normRules(raw) {
+    var msgs = [], out = {}, any = false, o = raw;
+    if (typeof raw === 'string') {
+      var a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+      if (a < 0 || b <= a) return { rules: null, msgs: ['Kein Regelblock gefunden. Er beginnt mit { und endet mit }.'] };
+      try { o = JSON.parse(raw.slice(a, b + 1)); } catch (e) { return { rules: null, msgs: ['Der Regelblock ist kein gültiges JSON. Bitte die KI den Block noch einmal vollständig ausgeben lassen.'] }; }
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return { rules: null, msgs: ['Kein Regelblock gefunden.'] };
+    Object.keys(o).forEach(function (k) { if (['v', 'note', 'meals', 'timing', 'shake', 'extra'].indexOf(k) < 0) msgs.push('Unbekannter Eintrag „' + k + '“ wird ignoriert.'); });
+    if (typeof o.note === 'string' && o.note.trim()) { out.note = o.note.trim().slice(0, 300); }
+    if (o.meals && typeof o.meals === 'object') {
+      var ms = {};
+      Object.keys(o.meals).forEach(function (k) {
+        if (RL_KINDS.indexOf(k) < 0) { msgs.push('Mahlzeit „' + k + '“ gibt es nicht und wird ignoriert.'); return; }
+        var src = o.meals[k], dst = {};
+        if (!src || typeof src !== 'object') return;
+        [['size', 'Größe', 0.3, 2.5], ['c', 'Carbs', 0.2, 3], ['p', 'Eiweiß', 0.2, 3], ['f', 'Fett', 0.2, 3]].forEach(function (d) {
+          if (src[d[0]] === undefined) return;
+          var v = rclamp(src[d[0]], d[2], d[3], msgs, MEAL_TXT[k] + ' ' + d[1]);
+          if (v !== null && v !== 1) dst[d[0]] = v;
+        });
+        if (k === 'snack' && src.on !== undefined) { var bo = rbool(src.on); if (bo !== null) dst.on = bo; else msgs.push('Snack „on“ muss true oder false sein.'); }
+        Object.keys(src).forEach(function (kk) { if (['size', 'c', 'p', 'f', 'on'].indexOf(kk) < 0) msgs.push(MEAL_TXT[k] + ': Eintrag „' + kk + '“ wird ignoriert.'); });
+        if (Object.keys(dst).length) ms[k] = dst;
+      });
+      if (Object.keys(ms).length) out.meals = ms;
+    }
+    if (o.timing && typeof o.timing === 'object') {
+      var tm = {};
+      Object.keys(o.timing).forEach(function (k) {
+        if (!TIMING_LIM[k]) { msgs.push('Zeiteinstellung „' + k + '“ gibt es nicht und wird ignoriert.'); return; }
+        var v = rclamp(o.timing[k], TIMING_LIM[k][0], TIMING_LIM[k][1], msgs, TIMING_TXT[k]);
+        if (v !== null) tm[k] = Math.round(v);
+      });
+      var e0 = tm.preEarliest !== undefined ? tm.preEarliest : TIMING_DEF.preEarliest, l0 = tm.preLatest !== undefined ? tm.preLatest : TIMING_DEF.preLatest;
+      if (e0 < l0 + 15) { tm.preEarliest = l0 + 15; msgs.push('Früheste Mahlzeit vor dem Training muss mindestens 15 min vor der spätesten liegen, auf ' + tm.preEarliest + ' min gesetzt.'); }
+      if (Object.keys(tm).length) out.timing = tm;
+    }
+    if (o.shake && typeof o.shake === 'object') {
+      var sh = {}, on = rbool(o.shake.on);
+      if (on === null) msgs.push('Shake „on“ muss true oder false sein, Shake bleibt aus.');
+      sh.on = on === true;
+      if (o.shake.at !== undefined) { var at = rclamp(o.shake.at, 0, 60, msgs, 'Shake: Minuten nach Trainingsende'); if (at !== null) sh.at = Math.round(at); }
+      if (o.shake.minMin !== undefined) { var mn = rclamp(o.shake.minMin, 0, 600, msgs, 'Shake: nur Einheiten ab (min)'); if (mn !== null && mn > 0) sh.minMin = Math.round(mn); }
+      if (o.shake.mealAfter !== undefined) { var ma = rclamp(o.shake.mealAfter, 10, 180, msgs, 'Mahlzeit nach dem Shake (min)'); if (ma !== null) sh.mealAfter = Math.round(ma); }
+      Object.keys(SHAKE_DEF).forEach(function (cls) {
+        var src = o.shake[cls];
+        if (src === undefined) return;
+        if (!src || typeof src !== 'object') { msgs.push('Shake ' + SHAKE_TXT[cls] + ': erwartet {"c":…,"p":…}.'); return; }
+        var c = rclamp(src.c === undefined ? SHAKE_DEF[cls].c : src.c, 0, 200, msgs, 'Shake ' + SHAKE_TXT[cls] + ' Carbs'), pp = rclamp(src.p === undefined ? SHAKE_DEF[cls].p : src.p, 0, 80, msgs, 'Shake ' + SHAKE_TXT[cls] + ' Eiweiß');
+        if (c !== null && pp !== null) sh[cls] = { c: Math.round(c), p: Math.round(pp) };
+      });
+      ['easy', 'mid', 'hard', 'long'].forEach(function () {});
+      Object.keys(o.shake).forEach(function (kk) { if (['on', 'at', 'mealAfter', 'minMin', 'easy', 'mid', 'hard', 'long'].indexOf(kk) < 0) msgs.push('Shake: Eintrag „' + kk + '“ wird ignoriert.'); });
+      out.shake = sh;
+    }
+    if (o.extra !== undefined) {
+      var exl = [];
+      if (!Array.isArray(o.extra)) msgs.push('„extra“ muss eine Liste sein, ignoriert.');
+      else o.extra.slice(0, 4).forEach(function (e, i) {
+        var nm0 = 'Zusatz-Mahlzeit ' + (i + 1);
+        if (!e || typeof e !== 'object') { msgs.push(nm0 + ': erwartet ein Objekt, ignoriert.'); return; }
+        var ex = { name: typeof e.name === 'string' && e.name.trim() ? e.name.trim().replace(/[<>]/g, '').slice(0, 30) : nm0 };
+        var lab = ex.name;
+        ex.when = e.when === 'before' || e.when === 'time' ? e.when : 'after';
+        if (e.when !== undefined && ['before', 'after', 'time'].indexOf(e.when) < 0) msgs.push(lab + ': „when“ muss before, after oder time sein, es gilt after.');
+        if (ex.when === 'time') {
+          var tz = /^(\d{1,2}):(\d{2})$/.exec(String(e.time)); if (!tz || +tz[1] > 23 || +tz[2] > 59) { msgs.push(lab + ': „time“ fehlt oder ist keine Uhrzeit (HH:MM), ignoriert.'); return; }
+          ex.time = tfmt(tmin(e.time));
+          if (rbool(e.trainingOnly) === true) ex.trainingOnly = true;
+        } else {
+          var off = e.offset === undefined ? (ex.when === 'before' ? 30 : 10) : rclamp(e.offset, ex.when === 'before' ? 5 : 0, 240, msgs, lab + ': Abstand (min)');
+          ex.offset = Math.round(off === null ? 10 : off);
+          if (e.minMin !== undefined) { var m1 = rclamp(e.minMin, 0, 600, msgs, lab + ': nur Einheiten ab (min)'); if (m1 !== null && m1 > 0) ex.minMin = Math.round(m1); }
+          if (e.maxMin !== undefined) { var m2 = rclamp(e.maxMin, 5, 900, msgs, lab + ': nur Einheiten bis (min)'); if (m2 !== null) ex.maxMin = Math.round(m2); }
+        }
+        var flat = {};
+        [['c', 200], ['p', 80], ['f', 60]].forEach(function (d) { if (e[d[0]] !== undefined) { var v = rclamp(e[d[0]], 0, d[1], msgs, lab + ': ' + d[0].toUpperCase()); if (v !== null) flat[d[0]] = Math.round(v); } });
+        Object.assign(ex, flat);
+        if (e.by && typeof e.by === 'object' && ex.when !== 'time') {
+          var by = {};
+          Object.keys(e.by).forEach(function (cls) {
+            if (!SHAKE_DEF[cls]) { msgs.push(lab + ': Einheitenart „' + cls + '“ gibt es nicht (easy, mid, hard, long), ignoriert.'); return; }
+            var z = e.by[cls]; if (!z || typeof z !== 'object') return;
+            var zc = rclamp(z.c === undefined ? 0 : z.c, 0, 200, msgs, lab + ' ' + SHAKE_TXT[cls] + ' Carbs'), zp = rclamp(z.p === undefined ? 0 : z.p, 0, 80, msgs, lab + ' ' + SHAKE_TXT[cls] + ' Eiweiß'), zf = rclamp(z.f === undefined ? 0 : z.f, 0, 60, msgs, lab + ' ' + SHAKE_TXT[cls] + ' Fett');
+            if (zc !== null && zp !== null && zf !== null) by[cls] = { c: Math.round(zc), p: Math.round(zp), f: Math.round(zf) };
+          });
+          if (Object.keys(by).length) ex.by = by;
+        }
+        Object.keys(e).forEach(function (kk) { if (['name', 'when', 'time', 'trainingOnly', 'offset', 'minMin', 'maxMin', 'c', 'p', 'f', 'by'].indexOf(kk) < 0) msgs.push(lab + ': Eintrag „' + kk + '“ wird ignoriert.'); });
+        if (!(ex.c > 0 || ex.p > 0 || ex.f > 0 || ex.by)) { msgs.push(lab + ': keine Menge angegeben (c, p, f oder by), ignoriert.'); return; }
+        exl.push(ex);
+      });
+      if (o.extra.length > 4) msgs.push('Höchstens 4 Zusatz-Mahlzeiten, der Rest wird ignoriert.');
+      if (exl.length) out.extra = exl;
+    }
+    any = !!(out.meals || out.timing || out.shake || out.extra || out.note);
+    if (!any) { return { rules: null, msgs: msgs.concat(['Der Regelblock enthält keine gültigen Einstellungen.']) }; }
+    out.v = 1;
+    return { rules: out, msgs: msgs };
+  }
+  function fmtN(n) { return String(n).replace('.', ','); }
+  function ruleLines(r) {
+    var L = [];
+    if (!r) return L;
+    if (r.meals) RL_KINDS.forEach(function (k) {
+      var m = r.meals[k]; if (!m) return;
+      var parts = [];
+      if (m.size) parts.push('Größe ×' + fmtN(m.size));
+      if (m.c) parts.push('Carbs ×' + fmtN(m.c));
+      if (m.p) parts.push('Eiweiß ×' + fmtN(m.p));
+      if (m.f) parts.push('Fett ×' + fmtN(m.f));
+      if (m.on === true) parts.push('Snack immer einplanen');
+      if (m.on === false) parts.push('kein Snack');
+      if (parts.length) L.push(MEAL_TXT[k] + ': ' + parts.join(', '));
+    });
+    if (r.timing) Object.keys(TIMING_TXT).forEach(function (k) { if (r.timing[k] !== undefined) L.push(TIMING_TXT[k] + ': ' + r.timing[k] + ' (Standard ' + TIMING_DEF[k] + ')'); });
+    if (r.shake) {
+      if (r.shake.on && r.shake.minMin) L.push('Shake nur bei Einheiten ab ' + r.shake.minMin + ' min');
+      if (!r.shake.on) L.push('Shake nach dem Training: aus');
+      else {
+        L.push('Shake nach dem Training: ' + (r.shake.at !== undefined ? r.shake.at : 10) + ' min nach Trainingsende, richtige Mahlzeit ' + (r.shake.mealAfter !== undefined ? r.shake.mealAfter : 30) + ' min später');
+        Object.keys(SHAKE_DEF).forEach(function (cls) { var z = r.shake[cls] || SHAKE_DEF[cls]; L.push('  Shake ' + SHAKE_TXT[cls] + ': ' + z.c + ' g Carbs, ' + z.p + ' g Eiweiß' + (z.c <= 0 && z.p <= 0 ? ' (kein Shake)' : '')); });
+      }
+    }
+    if (r.extra) r.extra.forEach(function (e) {
+      var amt = function (z) { return [z.c > 0 ? z.c + ' g Carbs' : '', z.p > 0 ? z.p + ' g Eiweiß' : '', z.f > 0 ? z.f + ' g Fett' : ''].filter(Boolean).join(', ') || '0'; };
+      var when = e.when === 'time' ? 'um ' + e.time + ' Uhr' + (e.trainingOnly ? ' (nur an Trainingstagen)' : '') : e.offset + ' min ' + (e.when === 'before' ? 'vor' : 'nach') + ' dem Training' + (e.minMin ? ', Einheiten ab ' + e.minMin + ' min' : '') + (e.maxMin ? ', bis ' + e.maxMin + ' min' : '');
+      L.push('Zusatz „' + e.name + '“: ' + when + (e.c > 0 || e.p > 0 || e.f > 0 ? ': ' + amt(e) : ''));
+      if (e.by) Object.keys(SHAKE_DEF).forEach(function (cls) { if (e.by[cls]) L.push('  ' + SHAKE_TXT[cls] + ': ' + amt(e.by[cls])); });
+    });
+    if (r.note) L.push('Notiz: ' + r.note);
+    return L;
+  }
+  function shakeClass(x) {
+    var lv = x.lv, m = x.s.min;
+    return lv === 2 ? 'hard' : m >= 150 ? 'long' : lv === 1 ? 'mid' : 'easy';
+  }
+  function rulesPrompt(p) {
+    var cur = normRules(p && p.rules).rules;
+    var T0 = [];
+    T0.push('Du hilfst mir, individuelle Ernährungsregeln für die App „Tankplan“ festzulegen. Tankplan plant Mahlzeiten und Makros rund um mein Radtraining. Ich beschreibe dir gleich in normalen Worten, was ich mit meinem Trainer abgesprochen habe. Du übersetzt das in einen Regelblock (JSON), den ich in Tankplan einfüge.');
+    T0.push('');
+    T0.push('## So antwortest du');
+    T0.push('1. Stelle kurze Rückfragen, wenn etwas unklar ist (zum Beispiel welche Mahlzeit gemeint ist oder wie groß etwas sein soll). Rate keine Zahlen, die ich nicht genannt habe, außer ich bitte dich darum.');
+    T0.push('2. Gib am Ende genau einen Codeblock mit dem vollständigen neuen Regelblock aus (alle Regeln, auch die schon bestehenden, die gelten sollen). Schreibe vor oder nach dem Block in ein bis drei Sätzen, was sich ändert.');
+    T0.push('3. Verwende nur die unten genannten Einträge und Zahlenbereiche. Erfinde keine neuen Einträge.');
+    T0.push('4. Du gibst keine medizinische Beratung. Wenn ein Wunsch extrem wirkt (zum Beispiel sehr wenige Kalorien oder Carbs), weise kurz darauf hin, dass das mit dem Trainer oder einer Ernährungsfachkraft abgeklärt werden sollte.');
+    T0.push('');
+    T0.push('## Was einstellbar ist (alle Einträge sind optional, nicht genannte bleiben im Standard)');
+    T0.push('Die Tagessummen (Kalorien, Carbs, Eiweiß, Fett) bleiben gleich. Die Regeln verschieben nur, wie sie auf die Mahlzeiten verteilt werden.');
+    T0.push('');
+    T0.push('### meals: Verteilung je Mahlzeit');
+    T0.push('Schlüssel: frueh (Frühstück), mittag, abend, snack, pre (Mahlzeit vor dem Training), post (Mahlzeit nach dem Training).');
+    T0.push('Je Mahlzeit optional: "size" = Gesamtgröße der Mahlzeit als Faktor (0.3 bis 2.5, 1 = Standard, 1.3 = 30 % größer), "c" = Carbs-Faktor, "p" = Eiweiß-Faktor, "f" = Fett-Faktor (je 0.2 bis 3). Die Faktoren wirken zusätzlich zu "size". Beispiel: mehr Carbs und weniger Fett morgens: {"frueh": {"c": 1.4, "f": 0.6}}.');
+    T0.push('Nur für snack zusätzlich: "on": true (Snack immer einplanen) oder false (nie einen Snack vorschlagen).');
+    T0.push('');
+    T0.push('### timing: Zeitabstände zum Training (ganze Minuten)');
+    Object.keys(TIMING_TXT).forEach(function (k) { T0.push('- "' + k + '": ' + TIMING_TXT[k] + '. Bereich ' + TIMING_LIM[k][0] + ' bis ' + TIMING_LIM[k][1] + ', Standard ' + TIMING_DEF[k] + '.'); });
+    T0.push('preEarliest muss mindestens 15 größer sein als preLatest. Tankplan nutzt vorrangig die Essenszeiten, die ich im Profil eingestellt habe, wenn sie in das Fenster zwischen preEarliest und preLatest passen.');
+    T0.push('');
+    T0.push('### shake: Shake direkt nach dem Training, danach richtige Mahlzeit');
+    T0.push('- "on": true oder false. Nur wenn true, plant Tankplan nach dem Training zuerst einen Shake und danach eine richtige Mahlzeit.');
+    T0.push('- "at": Minuten nach Trainingsende für den Shake (0 bis 60, Standard 10).');
+    T0.push('- "mealAfter": Minuten nach dem Shake bis zur richtigen Mahlzeit (10 bis 180, Standard 30).');
+    T0.push('- Größe des Shakes je Art der Einheit, jeweils {"c": Gramm Carbs (0 bis 200), "p": Gramm Eiweiß (0 bis 80)}: "easy" (lockere Einheit wie LIT, unter 150 min), "mid" (mittlere Intensität, zum Beispiel Tempo oder Sweetspot), "hard" (hart: Intervalle/HIT), "long" (sehr lang, ab 150 min, egal wie intensiv). Standard: easy 20/10, mid 50/25, hard 90/40, long 70/30. Mit {"c": 0, "p": 0} gibt es für diese Art keinen Shake.');
+    T0.push('Die richtige Mahlzeit danach bekommt die restlichen Carbs und das restliche Eiweiß der Nach-Training-Menge.');
+    T0.push('');
+    T0.push('Optional "minMin": der Shake wird nur bei Einheiten ab dieser Länge in Minuten geplant (0 bis 600).');
+    T0.push('');
+    T0.push('### extra: eigene zusätzliche Mahlzeiten (Liste, höchstens 4)');
+    T0.push('Damit fügst du Mahlzeiten hinzu, die Tankplan sonst nicht vorschlägt, zum Beispiel einen Recovery-Shake nach langen Einheiten oder ein Casein-Getränk am Abend. Die Mengen sind fest und werden von den Tagessummen abgezogen, die anderen Mahlzeiten behalten ihre Zeiten. (Anders als "shake": "shake" verschiebt zusätzlich die richtige Mahlzeit nach hinten. Nimm "extra", wenn nur etwas dazukommen soll.)');
+    T0.push('Je Eintrag: "name" (kurzer Titel, bis 30 Zeichen), "when": "after" (nach dem Training, Standard), "before" (vor dem Training) oder "time" (feste Uhrzeit, dann zusätzlich "time": "21:30" und optional "trainingOnly": true für nur Trainingstage).');
+    T0.push('Bei before/after: "offset" = Minuten nach Trainingsende bzw. vor Trainingsstart (after 0 bis 240, Standard 10; before 5 bis 240, Standard 30), optional "minMin" und "maxMin" = nur Einheiten mit mindestens bzw. höchstens so vielen Minuten Dauer.');
+    T0.push('Menge: entweder fest "c", "p", "f" (Gramm Carbs bis 200, Eiweiß bis 80, Fett bis 60) oder je Einheitenart in "by": {"easy": {...}, "mid": {...}, "hard": {...}, "long": {...}} mit jeweils c, p und f. Fehlt eine Art in "by", gibt es für diese Art nichts (außer feste c/p/f sind zusätzlich angegeben). Beispiel „Recovery-Shake nach Einheiten über 60 Minuten, locker 30 g Carbs, hart 90 g Carbs“: {"name": "Recovery Shake", "when": "after", "offset": 10, "minMin": 61, "by": {"easy": {"c": 30, "p": 10}, "mid": {"c": 60, "p": 20}, "hard": {"c": 90, "p": 30}, "long": {"c": 70, "p": 25}}}. Wenn ich nicht gesagt habe, wie viel Eiweiß, frage nach oder schlage einen Wert vor und sage, dass er von dir kommt.');
+    T0.push('');
+    T0.push('### note: kurzer Freitext (höchstens 300 Zeichen), zum Beispiel „mit Trainer besprochen am 4.11.“. Er ändert nichts an der Berechnung.');
+    T0.push('');
+    T0.push('## Format');
+    T0.push('Der Block ist gültiges JSON mit dem Eintrag "v": 1. Beispiel (nur zur Veranschaulichung, kein Vorschlag):');
+    T0.push('```json');
+    T0.push(JSON.stringify({ v: 1, note: 'Beispiel', meals: { frueh: { c: 1.3, f: 0.7 }, mittag: { size: 1.2 }, snack: { on: false } }, timing: { preOffset: 45, postDelay: 20 }, shake: { on: true, at: 10, mealAfter: 30, easy: { c: 20, p: 10 }, hard: { c: 90, p: 40 } }, extra: [{ name: 'Abend-Casein', when: 'time', time: '21:30', c: 0, p: 25, f: 0 }] }, null, 2));
+    T0.push('```');
+    T0.push('');
+    T0.push('## Mein Profil (zur Einordnung)');
+    if (p) T0.push('Gewicht ' + p.w + ' kg, Größe ' + p.h + ' cm, Alter ' + p.a + ', Ziel: ' + ({ lose: 'Abnehmen', keep: 'Halten', gain: 'Aufbauen' }[p.goal] || p.goal) + '. Essenszeiten: Frühstück ' + ((p.mt && p.mt.b) || DEF_MT.b) + ', Mittag ' + ((p.mt && p.mt.l) || DEF_MT.l) + ', Abend ' + ((p.mt && p.mt.d) || DEF_MT.d) + ', Snack ' + ((p.mt && p.mt.s) || DEF_MT.s) + '.');
+    T0.push('');
+    T0.push('## Meine aktuellen Regeln');
+    if (cur) { T0.push('```json'); T0.push(JSON.stringify(cur, null, 2)); T0.push('```'); }
+    else T0.push('Noch keine. Es gelten die Tankplan-Standards.');
+    T0.push('');
+    T0.push('## Meine Wünsche');
+    T0.push('(Hier beschreibe ich gleich in eigenen Worten, was angepasst werden soll.)');
+    return T0.join('\n');
+  }
 
   function trainWin(t) {
     return t.info.filter(function (x) { return !isCommute(x); }).map(function (x) {
@@ -436,6 +651,13 @@
     var mt = {};
     Object.keys(DEF_MT).forEach(function (k) { mt[k] = (mtIn && mtIn[k]) || DEF_MT[k]; });
     var trs = trainWin(t);
+    var R = normRules(p && p.rules).rules || {}, TM = Object.assign({}, TIMING_DEF, R.timing || {});
+    /* Faktor aus den Regeln für eine Mahlzeit (Art und Rolle) und Makro c/p/f */
+    function rmul(s, key) {
+      var m = 1, rs = R.meals || {};
+      [s.kind, s.role && s.role !== s.kind ? s.role : null].forEach(function (k) { var o = k && rs[k]; if (o) m *= (o.size || 1) * (o[key] || 1); });
+      return m;
+    }
     /* Essenspause (z. B. Schule 14:15 bis 15:45): dort wird keine Mahlzeit vorgeschlagen */
     var blk = null, bf = mtIn ? tmin(mtIn.nf) : null, bt = mtIn ? tmin(mtIn.nt) : null;
     if (bf !== null && bt !== null && bt > bf) {
@@ -461,44 +683,91 @@
     var cms = t.info.filter(function (x) { return isCommute(x) && tmin(x.s.tm) !== null; }).map(function (x) { var st0 = tmin(x.s.tm); return { st: st0, en: st0 + x.s.min, c: x.carbs }; });
     var snT = tmin(mt.s);
     var snAfterCm = snT !== null && cms.some(function (m) { return snT >= m.en && snT - m.en <= 90; });
-    var snack = (t.c >= 450 || trs.length || snAfterCm) && snT !== null ? { id: 's', kind: 'snack', at: snT, w: 0.15 } : null;
+    var snOn = R.meals && R.meals.snack ? R.meals.snack.on : undefined;
+    var snack = snOn !== false && (snOn === true || t.c >= 450 || trs.length || snAfterCm) && snT !== null ? { id: 's', kind: 'snack', at: snT, w: 0.15 } : null;
     if (snack) base.push(snack);
     trs.forEach(function (q) {
-      var pref = q.st - (q.big ? 150 : 60), best = null;
+      var pref = q.st - (q.big ? TM.preOffsetBig : TM.preOffset), best = null;
       if (!q.preSlot) base.forEach(function (b) {
-        if (b.role || inBlk(b.at) || b.at < q.st - 180 || b.at > q.st - 45) return;
+        if (b.role || inBlk(b.at) || b.at < q.st - TM.preEarliest || b.at > q.st - TM.preLatest) return;
         if (!best || Math.abs(b.at - pref) < Math.abs(best.at - pref)) best = b;
       });
       if (best) { best.role = 'pre'; best.q = q; q.preSlot = best; }
       base.forEach(function (b) {
         if (b.role) return;
-        if (b.at > q.st - 45 && b.at < q.en) b.at = q.en + 30;
-        if (b.at >= q.en && b.at <= q.en + 90 && !q.postSlot) { b.role = 'post'; b.q = q; q.postSlot = b; }
+        if (b.at > q.st - TM.preLatest && b.at < q.en) b.at = q.en + TM.postDelay;
+        if (b.at >= q.en && b.at <= q.en + TM.postWindow && !q.postSlot) { b.role = 'post'; b.q = q; q.postSlot = b; }
       });
     });
     var all = base.slice();
     trs.forEach(function (q, i) {
-      if (!q.preSlot) all.push({ id: 'pre' + i, kind: 'pre', role: 'pre', q: q, at: freeAt(q.st - (q.big ? 150 : 60), q.st - 180, q.st - 45) });
+      if (!q.preSlot) all.push({ id: 'pre' + i, kind: 'pre', role: 'pre', q: q, at: freeAt(q.st - (q.big ? TM.preOffsetBig : TM.preOffset), q.st - TM.preEarliest, q.st - TM.preLatest) });
       if (q.x.during > 0) all.push({ id: 'dur' + i, kind: 'during', q: q, at: q.st, c: q.x.during });
-      if (!q.postSlot) all.push({ id: 'post' + i, kind: 'post', role: 'post', q: q, at: freeAt(q.en + 30, q.en, q.en + 120) });
+      if (!q.postSlot) all.push({ id: 'post' + i, kind: 'post', role: 'post', q: q, at: freeAt(q.en + TM.postDelay, q.en, q.en + Math.max(120, TM.postDelay + 30)) });
     });
     if (blk) all.forEach(function (s) {
       if (s.kind === 'during' || !inBlk(s.at)) return;
-      s.at = s.role === 'pre' ? freeAt(s.at, s.q.st - 180, s.q.st - 45) : blk.b;
+      s.at = s.role === 'pre' ? freeAt(s.at, s.q.st - TM.preEarliest, s.q.st - TM.preLatest) : blk.b;
     });
     if (snack && !snack.role) {
       var near = all.some(function (s) { return s !== snack && Math.abs(s.at - snack.at) < 75; });
       var inTr = trs.some(function (q) { return snack.at > q.st - 45 && snack.at < q.en + 30; });
-      if ((t.c < 450 && !snAfterCm) || near || inTr) all.splice(all.indexOf(snack), 1);
+      if (inTr || (snOn !== true && ((t.c < 450 && !snAfterCm) || near))) all.splice(all.indexOf(snack), 1);
     }
 
+    /* Shake direkt nach dem Training, danach die richtige Mahlzeit (nur mit Regel shake.on) */
+    var shakeP = 0;
+    if (R.shake && R.shake.on) {
+      var shAt = R.shake.at !== undefined ? R.shake.at : 10, shAfter = R.shake.mealAfter !== undefined ? R.shake.mealAfter : 30;
+      trs.forEach(function (q, i) {
+        var cls = shakeClass(q.x), sz = R.shake[cls] || SHAKE_DEF[cls], post = null;
+        if (R.shake.minMin && q.x.s.min < R.shake.minMin) return;
+        if (!sz || (sz.c <= 0 && sz.p <= 0)) return;
+        all.forEach(function (s) { if (s.role === 'post' && s.q === q) post = s; });
+        if (!post) return;
+        var sat = q.en + shAt;
+        var wantAt = q.en + shAt + shAfter;
+        if (!q.postSlot) post.at = freeAt(wantAt, q.en, wantAt + 60);
+        else if (post.at < wantAt) post.at = wantAt;
+        if (inBlk(post.at)) post.at = blk.b;
+        if (post.at - sat < 20) return;
+        if (inBlk(sat)) { if (blk.b < post.at - 10) sat = blk.b; else return; }
+        post.afterShake = { c: sz.c, p: sz.p };
+        all.push({ id: 'shk' + i, kind: 'shake', q: q, at: sat, c: sz.c, p: sz.p, shake: true });
+        shakeP += sz.p;
+      });
+    }
+    /* Zusatz-Mahlzeiten aus den Regeln (zum Beispiel Recovery Shake): feste Mengen, werden von den Tagessummen abgezogen */
+    var extraP = 0, extraF = 0;
+    (R.extra || []).forEach(function (ex, ei) {
+      function put(id, at, c, pp, ff, q) {
+        if (c <= 0 && pp <= 0 && ff <= 0) return;
+        if (inBlk(at)) { at = freeAt(at, at - 30, at + 30); if (inBlk(at)) at = ex.when === 'before' ? blk.a : blk.b; }
+        all.push({ id: id, kind: 'extra', extra: true, name: ex.name, when: ex.when, q: q, at: at, c: c, p: pp, f: ff });
+        extraP += pp; extraF += ff;
+      }
+      if (ex.when === 'time') {
+        if (ex.trainingOnly && !trs.length) return;
+        put('ex' + ei, tmin(ex.time), ex.c || 0, ex.p || 0, ex.f || 0, null);
+        return;
+      }
+      trs.forEach(function (q, i) {
+        var m = q.x.s.min;
+        if ((ex.minMin && m < ex.minMin) || (ex.maxMin && m > ex.maxMin)) return;
+        var z = ex.by && ex.by[shakeClass(q.x)] ? ex.by[shakeClass(q.x)] : (ex.by ? null : { c: ex.c || 0, p: ex.p || 0, f: ex.f || 0 });
+        if (!z && ex.by && (ex.c > 0 || ex.p > 0 || ex.f > 0)) z = { c: ex.c || 0, p: ex.p || 0, f: ex.f || 0 };
+        if (!z) return;
+        put('ex' + ei + '_' + i, ex.when === 'before' ? q.st - ex.offset : q.en + ex.offset, z.c, z.p, z.f, q);
+      });
+    });
     var fixed = 0;
     all.forEach(function (s) {
-      if (s.role === 'pre') s.c = s.q.x.pre; else if (s.role === 'post') s.c = s.q.x.post;
-      if (s.role || s.kind === 'during') fixed += s.c;
+      if (s.role === 'pre') s.c = s.q.x.pre * rmul(s, 'c');
+      else if (s.role === 'post') s.c = Math.max(0, s.q.x.post * rmul(s, 'c') - (s.afterShake ? s.afterShake.c : 0));
+      if (s.role || s.kind === 'during' || s.kind === 'shake' || s.kind === 'extra') fixed += s.c;
     });
     var CW = { pre: 0.1, post: 0.5, frueh: 0.3, mittag: 0.35, abend: 0.35, snack: 0.15 };
-    var recv = all.filter(function (s) { return s.kind !== 'during'; });
+    var recv = all.filter(function (s) { return s.kind !== 'during' && s.kind !== 'shake' && s.kind !== 'extra'; });
     /* Carbs der Pendelfahrt: in die Mahlzeit direkt danach (bis 90 min), sonst in die letzte davor (bis 3 h), sonst in die nächste danach */
     var cmTotal = 0;
     cms.forEach(function (m) {
@@ -516,27 +785,30 @@
       tg.cmC = (tg.cmC || 0) + m.c; cmTotal += m.c;
     });
     var L = Math.max(0, t.c - fixed - cmTotal);
-    var wsum = recv.reduce(function (acc, s) { return acc + CW[s.role || s.kind]; }, 0) || 1;
-    recv.forEach(function (s) { s.c = (s.c || 0) + (s.cmC || 0) + L * CW[s.role || s.kind] / wsum; });
-    var elig = all.filter(function (s) { return s.kind !== 'during'; });
+    var wsum = recv.reduce(function (acc, s) { return acc + CW[s.role || s.kind] * rmul(s, 'c'); }, 0) || 1;
+    recv.forEach(function (s) { s.c = (s.c || 0) + (s.cmC || 0) + L * CW[s.role || s.kind] * rmul(s, 'c') / wsum; });
+    var elig = all.filter(function (s) { return s.kind !== 'during' && s.kind !== 'shake' && s.kind !== 'extra'; });
     function spread(total, table, key) {
-      var ws = elig.map(function (s) { return table[s.role || s.kind]; });
+      var ws = elig.map(function (s) { return table[s.role || s.kind] * ((key === 'p' || key === 'f') ? rmul(s, key) : 1); });
       var sum = ws.reduce(function (a, b) { return a + b; }, 0) || 1;
       elig.forEach(function (s, i) { s[key] = total * ws[i] / sum; });
     }
-    spread(t.p, PW, 'p'); spread(t.f, FW, 'f'); spread(GOALS.veg, VW, 'veg'); spread(GOALS.fruit, OW, 'fruit');
-    elig.forEach(function (s) { if (s.role === 'post') s.p = Math.max(s.p, s.q.x.postP); });
+    spread(Math.max(0, t.p - shakeP - extraP), PW, 'p'); spread(Math.max(0, t.f - extraF), FW, 'f'); spread(GOALS.veg, VW, 'veg'); spread(GOALS.fruit, OW, 'fruit');
+    elig.forEach(function (s) { if (s.role === 'post') s.p = Math.max(s.p, Math.max(0, s.q.x.postP - (s.afterShake ? s.afterShake.p : 0))); });
     all.forEach(function (s) {
       s.p = s.p || 0; s.f = s.f || 0; s.veg = s.veg || 0; s.fruit = s.fruit || 0;
       s.kcal = 4 * s.c + 4 * s.p + 9 * s.f;
       s.time = tfmt(s.at);
       s.label = KINDS[s.kind] + (s.role && s.kind !== s.role ? ' · ' + (s.role === 'pre' ? 'vor dem Training' : 'nach dem Training') : '');
+      if (s.kind === 'shake') s.label = 'Shake · nach dem Training';
+      if (s.kind === 'extra') s.label = s.name;
       if (s.q) {
         s.assumed = s.q.assumed;
         var ty = s.q.x.s.type;
-        s.rel = s.role === 'pre' ? hmText(s.q.st - s.at) + ' vor ' + ty : s.role === 'post' ? hmText(s.at - s.q.en) + ' nach ' + ty : ty + ', ' + s.q.x.s.min + ' min';
+        s.rel = s.kind === 'extra' ? (s.when === 'before' ? hmText(s.q.st - s.at) + ' vor ' + ty : hmText(s.at - s.q.en) + ' nach ' + ty) : s.kind === 'shake' ? hmText(s.at - s.q.en) + ' nach ' + ty : s.role === 'pre' ? hmText(s.q.st - s.at) + ' vor ' + ty : s.role === 'post' ? hmText(s.at - s.q.en) + ' nach ' + ty : ty + ', ' + s.q.x.s.min + ' min';
       }
-      s.focus = focusText(s, t);
+      s.focus = s.kind === 'extra' ? 'Eigene Zusatz-Mahlzeit aus deinen Regeln. Die Mengen sind von den Tagessummen abgezogen.' : s.kind === 'shake' ? 'Flüssig und schnell verdaulich: Carbs und Eiweiß, wenig Fett und Ballaststoffe.' : focusText(s, t);
+      if (s.afterShake) s.focus += ' Das ist die richtige Mahlzeit nach dem Shake.';
       if (s.cm) s.cm.forEach(function (m) { s.focus += ' Enthält ' + r0(m.c) + ' g Carbs ' + (m.after ? 'zum Auffüllen nach der' : 'für die') + ' Pendelfahrt um ' + tfmt(m.at) + '.'; });
     });
     all.sort(function (a, b) { return a.at - b.at; });
@@ -1276,6 +1548,7 @@
     '- Alle Nährwerte und Energiewerte sind Schätzungen aus einer Lebensmitteldatenbank und einem Rechenmodell. Der Trainingsverbrauch stammt aus kJ, aus der Beschreibung der Einheit, aus TSS mit FTP oder aus einer Schätzung (steht jeweils dabei).',
     '- Die Zuckerkurve ist ein Modell und kein Messwert. Nutze sie höchstens als grobe Orientierung.',
     '- Körpergewicht: Tageswerte schwanken durch Wasser, Verdauung und Glykogen leicht um 0,5 bis 1,5 kg. Aussagekräftig sind Trends über mehrere Tage. Fehlen Gewichtswerte, nicht raten.',
+    '- Gemüse und Obst mit dem Zusatz „(gegart)“ wurden gekocht, gedünstet oder gebraten gegessen, alle anderen roh. Die Nährwerte sind die Angaben der Datenbank (je 100 g) und wurden dafür nicht umgerechnet. Berücksichtige bei Verträglichkeit und Timing rund ums Training, dass gegartes Gemüse meist leichter verdaulich ist als rohes.',
     '- Tage ohne Einträge sind vermutlich nicht dokumentiert und keine Fastentage. Frage nach, wenn dir Informationen fehlen.',
     '- Keine Diagnosen und keine medizinischen Aussagen. Bei gesundheitlichen Fragen verweise auf Ärztin oder Arzt.',
     '- Antworte auf Deutsch, klar gegliedert, und belege Aussagen mit konkreten Tagen und Zahlen aus den Daten.'
@@ -1297,6 +1570,8 @@
     ln();
     var zs = zonesOf(p);
     ln('- Geschlecht: ' + (p.sex === 'm' ? 'männlich' : 'weiblich') + ', Alter ' + p.a + ', Größe ' + p.h + ' cm, Gewicht ' + p.w + ' kg, Grundumsatz ca. ' + r0(bmr(p)) + ' kcal');
+    var rlx = normRules(p.rules).rules;
+    if (rlx) { ln('- Individuelle Regeln (mit Trainer abgesprochen, von der App angewendet):'); ruleLines(rlx).forEach(function (x) { ln('  - ' + x); }); }
     ln('- Ziel: ' + ({ lose: 'Abnehmen (Kalorienziel ca. 15 % unter Bedarf)', keep: 'Gewicht halten', gain: 'Aufbauen (ca. 10 % über Bedarf)' }[p.goal] || p.goal));
     ln('- FTP: ' + (p.ftp ? p.ftp + ' W' : 'nicht angegeben') + '; Zonen in % der FTP (Obergrenzen): ' + ZONE_NAMES.map(function (nm, i) { return nm + ' bis ' + zs[i] + ' %' + (p.ftp ? ' (' + r0(zs[i] * p.ftp / 100) + ' W)' : ''); }).join('; '));
     var mp0 = macroPct(p);
@@ -1350,7 +1625,7 @@
       if (!r.n && !r.sess.length) { ln('Keine Einträge für diesen Tag.'); return; }
       ln('- Alltagsaktivität: ' + r.t.lvl + ' von 5 (' + LVL_NAME[r.t.lvl] + ')');
       ln('- Tagestyp: ' + r.t.dayType + '. Tagesziel: ' + r.t.kcal + ' kcal, ' + r.t.c + ' g Carbs (' + r.t.gkg + ' g/kg), ' + r.t.p + ' g Eiweiß, ' + r.t.f + ' g Fett');
-      ln('- Gegessen: ' + r0(r.st.k) + ' kcal, ' + r0(r.st.c) + ' g Carbs, ' + r0(r.st.p) + ' g Eiweiß, ' + r0(r.st.f) + ' g Fett, ' + r0(r.st.fi) + ' g Ballaststoffe, Gemüse ' + r0(r.st.veg) + ' g, Obst ' + r0(r.st.fruit) + ' g');
+      ln('- Gegessen: ' + r0(r.st.k) + ' kcal, ' + r0(r.st.c) + ' g Carbs, ' + r0(r.st.p) + ' g Eiweiß, ' + r0(r.st.f) + ' g Fett, ' + r0(r.st.fi) + ' g Ballaststoffe, Gemüse ' + r0(r.st.veg) + ' g, Obst ' + r0(r.st.fruit) + ' g' + (r.st.vegCook > 0 || r.st.fruitCook > 0 ? ' (davon gegart: Gemüse ' + r0(r.st.vegCook) + ' g, Obst ' + r0(r.st.fruitCook) + ' g)' : ''));
       if (r.groups.length) {
         var tms = r.groups.filter(function (g) { return g.t !== null; }).map(function (g) { return g.t; });
         if (tms.length) ln('- Erste Mahlzeit ' + tfmt(Math.min.apply(null, tms)) + ' Uhr, letzte Mahlzeit ' + tfmt(Math.max.apply(null, tms)) + ' Uhr');
@@ -1376,7 +1651,7 @@
         ln('  | Uhrzeit | Lebensmittel | Menge g | kcal | Carbs g | Eiweiß g | Fett g | Ballaststoffe g | Kategorie |');
         ln('  |---|---|---|---|---|---|---|---|---|');
         g.items.forEach(function (m) {
-          ln('  | ' + (m.t || '') + ' | ' + mdCell(m.name) + ' | ' + r0(m.g) + ' | ' + r0(m.kcal) + ' | ' + de(m.c, 1) + ' | ' + de(m.p, 1) + ' | ' + de(m.f, 1) + ' | ' + de(m.fi || 0, 1) + ' | ' + (m.grp === 'G' ? 'Gemüse' : m.grp === 'O' ? 'Obst' : 'Sonstiges') + (m.col ? ' (' + (COLN[m.col] || m.col) + ')' : '') + ' |');
+          ln('  | ' + (m.t || '') + ' | ' + mdCell(m.name) + (m.cook === 'g' ? ' (gegart)' : '') + ' | ' + r0(m.g) + ' | ' + r0(m.kcal) + ' | ' + de(m.c, 1) + ' | ' + de(m.p, 1) + ' | ' + de(m.f, 1) + ' | ' + de(m.fi || 0, 1) + ' | ' + (m.grp === 'G' ? 'Gemüse' : m.grp === 'O' ? 'Obst' : 'Sonstiges') + (m.col ? ' (' + (COLN[m.col] || m.col) + ')' : '') + ' |');
         });
         ln();
       });
@@ -1409,7 +1684,7 @@
     isCommute: isCommute, bmr: bmr, mapType: mapType, lvFromLoad: lvFromLoad, intensityFromTss: intensityFromTss, parseWorkoutText: parseWorkoutText, zonesOf: zonesOf, macroPct: macroPct, ZONE_NAMES: ZONE_NAMES, ZONE_UPPER: ZONE_UPPER, sessInfo: sessInfo, daySessions: daySessions, target: target,
     parseLine: parseLine, dayStats: dayStats, ampel: ampel, analyze: analyze,
     DEF_MT: DEF_MT, KINDS: KINDS, tmin: tmin, tfmt: tfmt, hmText: hmText, trainWin: trainWin, guessKind: guessKind, mealPlan: mealPlan, matchMeals: matchMeals, slotKind: slotKind, slotInst: slotInst, slotLabel: slotLabel, relLabel: relLabel, fuelCheck: fuelCheck,
-    glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
+    normRules: normRules, ruleLines: ruleLines, rulesPrompt: rulesPrompt, SHAKE_DEF: SHAKE_DEF, glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
     reportHtml: reportHtml, reportParts: reportParts, METRICS: METRICS, trendChartSvg: trendChartSvg, trendTableHtml: trendTableHtml, trendDayHtml: trendDayHtml, wSorted: wSorted, weightStats: weightStats, weightChartSvg: weightChartSvg, wTrendAt: wTrendAt, dayListHtml: dayListHtml, toCsv: toCsv, chartSvg: chartSvg
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
