@@ -1,4 +1,4 @@
-var CACHE = 'tankplan-v29';
+var CACHE = 'tankplan-v34';
 var FILES = ['./', 'index.html', 'trainer.html', 'style.css', 'config.js', 'foods.js', 'core.js', 'app.js', 'trainer.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(FILES); }).then(function () { return self.skipWaiting(); })); });
 self.addEventListener('activate', function (e) {

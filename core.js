@@ -211,8 +211,15 @@
     var out = acts.slice();
     out.dropped = [];
     model.plan.filter(function (x) { return x.day === d; }).forEach(function (p) {
-      var i = -1;
-      for (var k = 0; k < acts.length; k++) if (!used[k] && acts[k].type === p.type) { i = k; break; }
+      /* Eine geplante Einheit gilt nur dann als absolviert, wenn Sportart UND Art (Pendelfahrt oder Training) passen.
+         Sonst würde eine kurze Pendelfahrt (Rad) das geplante Rad-Training am selben Tag verschlucken. Bei mehreren Treffern gewinnt die ähnlichste Dauer. */
+      var i = -1, best = 1e9, pc = isCommute({ type: p.type, min: p.min, lv: p.lv, title: p.title });
+      for (var k = 0; k < acts.length; k++) {
+        if (used[k] || acts[k].type !== p.type) continue;
+        if (isCommute({ type: acts[k].type, min: acts[k].min, lv: acts[k].lv, title: acts[k].title }) !== pc) continue;
+        var df = Math.abs((acts[k].min || 0) - (p.min || 0));
+        if (df < best) { best = df; i = k; }
+      }
       if (i >= 0) { used[i] = true; return; }
       if (d < model.today) { out.dropped.push(p); return; }
       var plannedIntensity = p.tss ? intensityFromTss(p.tss, p.min) : null;
@@ -647,11 +654,46 @@
     return t.note ? 'Carbs betonen für morgen. Gemüse in Maßen, damit der Magen nicht zu voll ist.' : 'Schwerpunkt Gemüse, dazu Eiweiß. Carbs nach Bedarf.';
   }
 
+  /* ---------- Mahlzeit auf mehrere Uhrzeiten aufteilen (v29): profile.splits = { snack: [{ t: '09:50', w: 50 }, { t: '11:40', w: 50 }] } ---------- */
+  var SPLIT_KINDS = ['frueh', 'mittag', 'abend', 'snack'];
+  function normSplits(raw) {
+    var out = {}, any = false;
+    if (!raw || typeof raw !== 'object') return { splits: null };
+    SPLIT_KINDS.forEach(function (k) {
+      var a = raw[k]; if (!Array.isArray(a) || a.length < 2 || a.length > 4) return;
+      var parts = [], ok = true;
+      a.forEach(function (x) {
+        var m = x ? tmin(x.t) : null, w = x ? Number(x.w) : NaN;
+        if (m === null || !(w > 0)) { ok = false; return; }
+        parts.push({ at: m, w: w });
+      });
+      if (!ok || parts.length !== a.length) return;
+      var sum = parts.reduce(function (n, x) { return n + x.w; }, 0), used = 0;
+      parts.sort(function (x, y) { return x.at - y.at; });
+      out[k] = parts.map(function (x, i) {
+        var w = i === parts.length - 1 ? 100 - used : Math.round(100 * x.w / sum);
+        used += w; return { t: tfmt(x.at), w: Math.max(1, w) };
+      });
+      any = true;
+    });
+    return { splits: any ? out : null };
+  }
+  /* ---------- Geplante Mahlzeit (v31): profile.planned = { '2026-11-06': [{ id, name, t, c, p, f, rep }] } ---------- */
+  function normPlanned(raw, day) {
+    var a = raw && day && Array.isArray(raw[day]) ? raw[day] : [], out = [];
+    a.slice(0, 6).forEach(function (x) {
+      if (!x) return;
+      var at = tmin(x.t), c = Math.max(0, Math.min(600, Number(x.c) || 0)), pp = Math.max(0, Math.min(200, Number(x.p) || 0)), f = Math.max(0, Math.min(200, Number(x.f) || 0));
+      if (at === null || c + pp + f <= 0) return;
+      out.push({ id: String(x.id || ''), name: String(x.name || 'Geplante Mahlzeit').slice(0, 30), t: tfmt(at), c: c, p: pp, f: f, rep: SPLIT_KINDS.indexOf(x.rep) >= 0 ? x.rep : '' });
+    });
+    return out;
+  }
   function mealPlan(p, t, mtIn, day) {
     var mt = {};
     Object.keys(DEF_MT).forEach(function (k) { mt[k] = (mtIn && mtIn[k]) || DEF_MT[k]; });
     var trs = trainWin(t);
-    var R = normRules(p && p.rules).rules || {}, TM = Object.assign({}, TIMING_DEF, R.timing || {});
+    var R = normRules(p && p.rules).rules || {}, TM = Object.assign({}, TIMING_DEF, R.timing || {}), PLN = normPlanned(p && p.planned, day);
     /* Faktor aus den Regeln für eine Mahlzeit (Art und Rolle) und Makro c/p/f */
     function rmul(s, key) {
       var m = 1, rs = R.meals || {};
@@ -686,6 +728,9 @@
     var snOn = R.meals && R.meals.snack ? R.meals.snack.on : undefined;
     var snack = snOn !== false && (snOn === true || t.c >= 450 || trs.length || snAfterCm) && snT !== null ? { id: 's', kind: 'snack', at: snT, w: 0.15 } : null;
     if (snack) base.push(snack);
+    /* Geplante Mahlzeiten können eine Standard-Mahlzeit ersetzen */
+    var repl = {}; PLN.forEach(function (x) { if (x.rep) repl[x.rep] = 1; });
+    if (Object.keys(repl).length) { base = base.filter(function (b) { return !repl[b.kind]; }); if (repl.snack) snack = null; }
     trs.forEach(function (q) {
       var pref = q.st - (q.big ? TM.preOffsetBig : TM.preOffset), best = null;
       if (!q.preSlot) base.forEach(function (b) {
@@ -760,6 +805,10 @@
         put('ex' + ei + '_' + i, ex.when === 'before' ? q.st - ex.offset : q.en + ex.offset, z.c, z.p, z.f, q);
       });
     });
+    PLN.forEach(function (x, i) {
+      all.push({ id: 'pln' + i, kind: 'extra', extra: true, name: x.name, when: 'time', pid: x.id, rep: x.rep, at: tmin(x.t), c: x.c, p: x.p, f: x.f });
+      extraP += x.p; extraF += x.f;
+    });
     var fixed = 0;
     all.forEach(function (s) {
       if (s.role === 'pre') s.c = s.q.x.pre * rmul(s, 'c');
@@ -807,10 +856,31 @@
         var ty = s.q.x.s.type;
         s.rel = s.kind === 'extra' ? (s.when === 'before' ? hmText(s.q.st - s.at) + ' vor ' + ty : hmText(s.at - s.q.en) + ' nach ' + ty) : s.kind === 'shake' ? hmText(s.at - s.q.en) + ' nach ' + ty : s.role === 'pre' ? hmText(s.q.st - s.at) + ' vor ' + ty : s.role === 'post' ? hmText(s.at - s.q.en) + ' nach ' + ty : ty + ', ' + s.q.x.s.min + ' min';
       }
-      s.focus = s.kind === 'extra' ? 'Eigene Zusatz-Mahlzeit aus deinen Regeln. Die Mengen sind von den Tagessummen abgezogen.' : s.kind === 'shake' ? 'Flüssig und schnell verdaulich: Carbs und Eiweiß, wenig Fett und Ballaststoffe.' : focusText(s, t);
+      s.focus = s.pid !== undefined && s.kind === 'extra' ? 'Von dir für diesen Tag geplant' + (s.rep ? ' (ersetzt ' + KINDS[s.rep] + ')' : '') + '. Die Mengen sind von den Tagessummen abgezogen, die anderen Mahlzeiten passen sich an.' : s.kind === 'extra' ? 'Eigene Zusatz-Mahlzeit aus deinen Regeln. Die Mengen sind von den Tagessummen abgezogen.' : s.kind === 'shake' ? 'Flüssig und schnell verdaulich: Carbs und Eiweiß, wenig Fett und Ballaststoffe.' : focusText(s, t);
       if (s.afterShake) s.focus += ' Das ist die richtige Mahlzeit nach dem Shake.';
       if (s.cm) s.cm.forEach(function (m) { s.focus += ' Enthält ' + r0(m.c) + ' g Carbs ' + (m.after ? 'zum Auffüllen nach der' : 'für die') + ' Pendelfahrt um ' + tfmt(m.at) + '.'; });
     });
+    /* Aufteilung auf mehrere Uhrzeiten (nur Mahlzeiten ohne Trainingsrolle) */
+    var SPL = normSplits(p && p.splits).splits;
+    if (SPL) {
+      var split = [];
+      all.forEach(function (s) {
+        var sp = SPL[s.kind];
+        if (!sp || s.role || s.kind === 'shake' || s.kind === 'extra' || s.kind === 'during') { split.push(s); return; }
+        sp.forEach(function (pt, i) {
+          var o = Object.assign({}, s), f = pt.w / 100;
+          o.id = s.id + '_' + i; o.at = tmin(pt.t); o.time = tfmt(o.at);
+          ['c', 'p', 'f', 'veg', 'fruit'].forEach(function (k) { o[k] = (s[k] || 0) * f; });
+          o.kcal = 4 * o.c + 4 * o.p + 9 * o.f;
+          o.label = KINDS[s.kind] + ' ' + (i + 1);
+          o.part = { i: i + 1, n: sp.length, w: pt.w };
+          o.focus = 'Teil ' + (i + 1) + ' von ' + sp.length + ' (' + pt.w + ' % der Menge für ' + KINDS[s.kind] + '). ' + (s.focus || '');
+          if (i > 0) delete o.cm;
+          split.push(o);
+        });
+      });
+      all = split;
+    }
     all.sort(function (a, b) { return a.at - b.at; });
     return all.map(function (s) { var o = {}; Object.keys(s).forEach(function (k) { if (k !== 'q') o[k] = s[k]; }); return o; });
   }
@@ -1684,7 +1754,7 @@
     isCommute: isCommute, bmr: bmr, mapType: mapType, lvFromLoad: lvFromLoad, intensityFromTss: intensityFromTss, parseWorkoutText: parseWorkoutText, zonesOf: zonesOf, macroPct: macroPct, ZONE_NAMES: ZONE_NAMES, ZONE_UPPER: ZONE_UPPER, sessInfo: sessInfo, daySessions: daySessions, target: target,
     parseLine: parseLine, dayStats: dayStats, ampel: ampel, analyze: analyze,
     DEF_MT: DEF_MT, KINDS: KINDS, tmin: tmin, tfmt: tfmt, hmText: hmText, trainWin: trainWin, guessKind: guessKind, mealPlan: mealPlan, matchMeals: matchMeals, slotKind: slotKind, slotInst: slotInst, slotLabel: slotLabel, relLabel: relLabel, fuelCheck: fuelCheck,
-    normRules: normRules, ruleLines: ruleLines, rulesPrompt: rulesPrompt, SHAKE_DEF: SHAKE_DEF, glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
+    normSplits: normSplits, normPlanned: normPlanned, normRules: normRules, ruleLines: ruleLines, rulesPrompt: rulesPrompt, SHAKE_DEF: SHAKE_DEF, glucoseOf: glucoseOf, exportMd: exportMd, PAL: PAL, LVL_NAME: LVL_NAME, LVL_DESC: LVL_DESC, nowMinutes: nowMinutes, groupMeals: groupMeals, pieSvg: pieSvg, pieCaption: pieCaption, pieLegend: pieLegend, dayChartSvg: dayChartSvg, dayChartHtml: dayChartHtml, dayReview: dayReview, reviewHtml: reviewHtml, parseLabel: parseLabel,
     reportHtml: reportHtml, reportParts: reportParts, METRICS: METRICS, trendChartSvg: trendChartSvg, trendTableHtml: trendTableHtml, trendDayHtml: trendDayHtml, wSorted: wSorted, weightStats: weightStats, weightChartSvg: weightChartSvg, wTrendAt: wTrendAt, dayListHtml: dayListHtml, toCsv: toCsv, chartSvg: chartSvg
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

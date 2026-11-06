@@ -26,7 +26,7 @@
     return blank();
   }
   var S = loadState();
-  var view = 'heute', cur = T.today(), sel = null, selG = 100, ctx = null;
+  var view = 'heute', cur = T.today(), sel = null, selG = 100, ctx = null, dishOpen = false;
   var q = '', planText = '', planDesc = '', planTitle = '', planUpd = false, xFrom = T.addDays(T.today(), -6), xTo = T.today(), planDay = T.addDays(T.today(), 1), planTime = '', range = 30;
   var lastToday = T.today(), banner = '', busy = false, syncTimer = null, eanMsg = '', isyncBusy = false;
   var barcode = { active: false, busy: false, msg: '' }, barcodeScanner = null, barcodeStartPromise = null, barcodeScriptPromise = null;
@@ -650,6 +650,33 @@
     var t = String(title || '').trim().toLowerCase(); if (!t) return null;
     return (S.profile.lib || []).filter(function (x) { return x.title.trim().toLowerCase() === t; })[0] || null;
   }
+  var PMODE_KEY = 'tankplan.planmode';
+  var planMode = (function () { try { return localStorage.getItem(PMODE_KEY) === 'text' ? 'text' : 'fields'; } catch (e) { return 'fields'; } })();
+  var planF = { type: 'Rad', min: '', w: '', tss: '', kj: '', lv: 'auto' };
+  function planFieldItem() {
+    var f = planF, min = Math.round(Number(f.min) || 0), w = Number(f.w) || 0, tss = Number(f.tss) || 0, kj = Number(f.kj) || 0, ftp = Number(S.profile.ftp) || 0, est = {};
+    var inf = planTitle.trim() ? T.parseLine(planTitle, planDay) : null;
+    var lv = f.lv === 'auto' ? (inf ? inf.lv : 1) : +f.lv;
+    if (w > 0 && min > 0) {
+      if (!kj && f.type === 'Rad') { kj = Math.round(w * min * 0.06); est.kj = true; }
+      if (!tss && ftp > 0 && f.type === 'Rad') { tss = Math.round(min / 60 * Math.pow(w / ftp, 2) * 100); est.tss = true; }
+    }
+    return { day: planDay, title: planTitle.trim(), type: f.type, min: min, minGiven: min > 0, lv: lv, tm: planTime || null, tss: tss || null, kj: kj || null, w: w, est: est };
+  }
+  function planInputs() {
+    if (planMode === 'fields') return Number(planF.min) > 0 ? [{ x: planFieldItem(), l: '' }] : [];
+    return planText.split('\n').map(function (l) { return { x: T.parseLine(l, planDay), l: l }; });
+  }
+  function planFieldsHtml() {
+    var types = ['Rad', 'Laufen', 'Schwimmen', 'Kraft', 'Sonstiges'], lvs = [['auto', 'Automatisch'], ['0', 'Locker'], ['1', 'Mittel'], ['2', 'Hart']];
+    return '<label class="f" for="pf-min">Dauer (min)<input id="pf-min" type="number" inputmode="numeric" min="1" max="1000" placeholder="z. B. 120" value="' + esc(planF.min) + '"></label>' +
+      '<label class="f" for="pf-w">Ø Watt<input id="pf-w" type="number" inputmode="numeric" min="0" max="2000" placeholder="optional" value="' + esc(planF.w) + '"></label>' +
+      '<label class="f" for="pf-tss">TSS<input id="pf-tss" type="number" inputmode="numeric" min="0" max="1000" placeholder="optional" value="' + esc(planF.tss) + '"></label>' +
+      '<label class="f" for="pf-kj">kJ<input id="pf-kj" type="number" inputmode="numeric" min="0" max="10000" placeholder="optional" value="' + esc(planF.kj) + '"></label>' +
+      '<label class="f" for="pf-type">Sportart<select id="pf-type">' + types.map(function (t) { return '<option' + (planF.type === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></label>' +
+      '<label class="f" for="pf-lv">Intensität<select id="pf-lv">' + lvs.map(function (x) { return '<option value="' + x[0] + '"' + (String(planF.lv) === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></label>' +
+      '<p class="note full" style="margin:0">Alles außer der Dauer ist optional. TSS steuert die Intensität, kJ den Energieverbrauch. Ohne kJ rechne ich aus Ø Watt × Dauer, ohne TSS (mit FTP im Profil) aus Ø Watt und FTP. Ohne Angaben schätzt Tankplan aus Intensität und Gewicht.</p>';
+  }
   function effDesc() { var l = libFind(planTitle); return planDesc.trim() || (l ? l.descr : ''); }
   function libSave(title, descr, type, update) {
     var l = libFind(title);
@@ -669,16 +696,18 @@
       (d.hasFtp ? ', IF ' + d.ifactor.toFixed(2) + ', ' + r0(d.tss) + ' TSS' + (z ? '. Zonen: ' + z : '') : '. Mit FTP im Profil kommen IF, TSS und Zonen dazu.') + (d.warn.length ? ' (' + d.warn.join('; ') + ')' : '');
   }
   function planPreview() {
-    var lines = planText.split('\n').map(function (l) { return T.parseLine(l, planDay); }).filter(Boolean);
+    var lines = planMode === 'fields' ? (Number(planF.min) > 0 ? [planFieldItem()] : []) : planText.split('\n').map(function (l) { return T.parseLine(l, planDay); }).filter(Boolean);
     var ed = effDesc(), dsc = ed ? T.parseWorkoutText(ed, S.profile) : null, lb = libFind(planTitle);
     var dhtml = ed ? ((lb && !planDesc.trim() ? 'Vorlage „' + esc(lb.title) + '“ gefunden. ' : '') + (planTitle.trim() && !lb && planDesc.trim() ? 'Neuer Titel, wird in der Bibliothek gespeichert. ' : '') + (lb && planDesc.trim() && planDesc.trim() !== lb.descr.trim() && !planUpd ? 'Die Beschreibung weicht von der Vorlage ab und wird nicht überschrieben (Haken „Vorlage aktualisieren“ setzen, oder neuen Titel wählen). ' : '') + (dsc ? esc(descSummary(dsc)) + (lines.length ? '<br>' : '') : 'In der Beschreibung habe ich keine Abschnitte mit Watt-Angabe gefunden (erwartet: „10 min @ 150-180 W“).' + (lines.length ? '<br>' : ''))) : '';
     if (!lines.length && dhtml) return dhtml + '<br>Wird eingetragen für ' + esc(T.dayLabel(planDay)) + (planTime ? ', ' + esc(planTime) + ' Uhr' : ', ohne Uhrzeit') + '.';
+    if (!lines.length && planMode === 'fields') return 'Trage mindestens die Dauer ein. Datum und Uhrzeit stehen oben.';
     if (!lines.length) return 'Pro Zeile: Sportart und Dauer; optional TSS und kJ, z. B. „Morgen 17:30 Rad Intervalle 75 min 90 TSS 650 kJ“. TSS steuert die Intensität; kJ prognostiziert den Energieverbrauch (Faustregel: 1 kJ ≈ 1 kcal).';
     return dhtml + lines.map(function (x) {
       if (x.rest) return esc(T.dayLabel(x.day)) + ': Ruhetag';
       var tssIntensity = x.tss ? T.intensityFromTss(x.tss, x.min) : null;
       var details = tssIntensity ? ', ' + x.tss + ' TSS · IF ' + tssIntensity.factor.toFixed(2) + ' · ' + T.INT[tssIntensity.lv] : ', ' + T.INT[x.lv];
-      if (x.kj) details += ' · ' + x.kj + ' kJ ≈ ' + r0(x.kj) + ' kcal';
+      if (x.kj) details += ' · ' + x.kj + ' kJ ≈ ' + r0(x.kj) + ' kcal' + (x.est && x.est.kj ? ' (aus Ø Watt)' : '');
+      if (x.est && x.est.tss) details += ' · TSS aus Ø Watt und FTP geschätzt';
       return esc(T.dayLabel(x.day)) + ': ' + ((x.tm || planTime) ? esc(x.tm || planTime) + ' Uhr, ' : 'keine Uhrzeit, ') + x.type + ', ' + x.min + ' min' + details;
     }).join('<br>');
   }
@@ -686,11 +715,12 @@
     var m = model(), tdy = T.today(), rows = T.analyze(m, tdy, T.addDays(tdy, 9));
     var h = '<div class="top"><div><div class="brand">Plan</div><div class="date">Kommende Workouts</div></div></div>' + bannerHtml();
     h += '<form class="card form" id="planform"><div class="full eyebrow">Workouts eintragen</div>' +
-      '<label class="f" for="plandate">Datum, wenn nichts in der Zeile steht<input id="plandate" type="date" value="' + planDay + '"></label>' +
-      '<label class="f" for="plantime">Uhrzeit, wenn nichts in der Zeile steht<input id="plantime" type="time" value="' + esc(planTime) + '"></label>' +
+      '<div class="full"><div class="seg" role="group" aria-label="Art der Eingabe">' + [['fields', 'Einzelfelder'], ['text', 'Textfeld']].map(function (x) { return '<button type="button" data-a="planmode" data-v="' + x[0] + '" aria-pressed="' + (planMode === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div></div>' +
+      '<label class="f" for="plandate">Datum' + (planMode === 'fields' ? '' : ', wenn nichts in der Zeile steht') + '<input id="plandate" type="date" value="' + planDay + '"></label>' +
+      '<label class="f" for="plantime">Uhrzeit' + (planMode === 'fields' ? '' : ', wenn nichts in der Zeile steht') + '<input id="plantime" type="time" value="' + esc(planTime) + '"></label>' + (planMode === 'fields' ? planFieldsHtml() : '') +
       '<label class="f full" for="planlib">Einheit aus Bibliothek<select id="planlib">' + libOptions() + '</select></label>' +
       '<label class="f full" for="plantitle">Titel der Einheit<input id="plantitle" type="text" maxlength="80" autocomplete="off" placeholder="z. B. LIT 2h oder 30/30" value="' + esc(planTitle) + '"></label>' +
-      '<label class="f full" for="plantext">Tag, Uhrzeit, Dauer (eine Zeile pro Einheit)<textarea id="plantext" rows="2" placeholder="morgen 17:30 120 min&#10;Sa 9 Uhr 90 min&#10;(ohne Titel: Rad Intervalle 75 min 90 TSS 650 kJ)">' + esc(planText) + '</textarea></label>' +
+      (planMode === 'text' ? '<label class="f full" for="plantext">Tag, Uhrzeit, Dauer (eine Zeile pro Einheit)<textarea id="plantext" rows="2" placeholder="morgen 17:30 120 min&#10;Sa 9 Uhr 90 min&#10;(ohne Titel: Rad Intervalle 75 min 90 TSS 650 kJ)">' + esc(planText) + '</textarea></label>' : '') +
       '<label class="f full" for="plandesc">TP-Beschreibung (Schritte aus TrainingPeaks). Bei gewählter Vorlage vorausgefüllt und änderbar, zum Beispiel „Repeat 8 times“ auf 10<textarea id="plandesc" placeholder="Warm up 15 min @ 150-180 W&#10;Repeat 8 times&#10;Hard 30 sec @ 360-435 W&#10;Easy 30 sec @ 150-180 W&#10;Cool Down 7 min @ 120-180 W">' + esc(planDesc) + '</textarea></label>' +
       '<label class="chk full"><input type="checkbox" id="planupd"' + (planUpd ? ' checked' : '') + '> Vorlage mit dieser Beschreibung aktualisieren</label>' +
       '<label class="chk full"><input type="checkbox" id="plandone"' + (planDone ? ' checked' : '') + '> Bereits absolviert (nachträglich eintragen, z. B. „gestern Stabi 50 min“)</label>' +
@@ -730,9 +760,26 @@
       return '<button data-a="addset" data-id="' + esc(x.id) + '">' + esc(x.title) + '<span>' + r0(k) + ' kcal · ' + r0(c) + ' C · ' + x.items.length + ' Zutaten</span></button>';
     }).join('') + '</div>';
   }
+  function dishHtml() {
+    var I = window.IMBISS; if (!I) return '';
+    var toks = T.norm(q).split(/\s+/).filter(Boolean), ds = I.dishes.filter(function (d) {
+      var h = T.norm(d.n + ' ' + d.kw); return toks.every(function (t) { return h.indexOf(t) >= 0; });
+    });
+    if (!ds.length) return '';
+    var btns = '<div class="res">' + ds.map(function (d) { return '<button data-a="dish" data-id="' + d.id + '">' + esc(d.n) + '<span>Größe und Soße wählen</span></button>'; }).join('') + '</div>';
+    if (toks.length) return '<div class="eyebrow" style="margin:10px 0 4px">Imbiss und Fast Food</div>' + btns;
+    return '<details class="dishbox"' + (dishOpen ? ' open' : '') + '><summary>Restaurant, Imbiss und Fast Food<span>Döner, Pizza, Burger, Pasta … · ' + ds.length + ' Gerichte mit Größe und Soße zur Auswahl</span></summary>' + btns + '</details>';
+  }
+  function dishSelHtml() {
+    var I = window.IMBISS, d = null, o = sel.dish.o; I.dishes.forEach(function (x) { if (x.id === sel.dish.id) d = x; });
+    if (!d) return '';
+    return '<div class="form" style="margin-top:10px">' + d.opts.map(function (x) {
+      return '<label class="f" for="do-' + x.id + '">' + esc(x.l) + '<select id="do-' + x.id + '" class="dsel" data-o="' + x.id + '">' + x.c.map(function (c) { return '<option value="' + esc(c[0]) + '"' + (String(o[x.id]) === String(c[0]) ? ' selected' : '') + '>' + esc(c[1]) + '</option>'; }).join('') + '</select></label>';
+    }).join('') + '</div><div class="note" style="margin-top:8px">Gesamtgewicht ca. ' + r0(sel.pg) + ' g. Richtwerte aus Durchschnittsportionen, Imbisse und Pizzerien weichen im Einzelfall ab, am stärksten bei Soßen (Imbiss-Soßen liegen je nach Rezept zwischen etwa 80 und 330 kcal je 100 g). Die Menge kannst du nach dem Hinzufügen unter „Bearbeiten“ anpassen.</div>';
+  }
   function resultsHtml() {
     var list = q.trim() ? T.searchFoods(allFoods(), q, 25) : recents();
-    var sh = setsHtml();
+    var sh = setsHtml() + dishHtml();
     if (!list.length) return sh + (q.trim() ? (sh ? '' : '<div class="empty">Im eigenen Bestand nichts gefunden. Suche unten in Open Food Facts, lege das Lebensmittel selbst an oder scanne den Strichcode.</div>') + offHtml() : '');
     var head = q.trim() ? (sh ? '<div class="eyebrow" style="margin:10px 0 4px">Lebensmittel</div>' : '') : '<div class="eyebrow" style="margin:10px 0 4px">Zuletzt gegessen</div>';
     return sh + head + '<div class="res">' + list.map(function (f) {
@@ -803,7 +850,9 @@
     var h = '<div class="mpanel"><div class="form"><label class="f" for="ctime">Uhrzeit<input id="ctime" type="time" value="' + esc(ctx.time) + '"></label></div>';
     h += '<label class="f" for="q">Lebensmittel suchen<input id="q" type="search" placeholder="z. B. Haferflocken" value="' + esc(q) + '" autocomplete="off"></label><div id="res">' + resultsHtml() + '</div>';
     if (sel) {
-      h += '<section class="card sel" id="selcard"><b>' + esc(sel.n) + '</b><div class="note">' + r0(sel.k) + ' kcal · ' + de(sel.c, 1) + ' C · ' + de(sel.p, 1) + ' P · ' + de(sel.f, 1) + ' F · ' + de(sel.fi || 0, 1) + ' Ballaststoffe je 100 g</div>' +
+      if (sel.dish) h += '<section class="card sel" id="selcard"><b>' + esc(sel.n) + '</b>' + dishSelHtml() +
+        '<div class="note" id="selprev">' + selPreview() + '</div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn" data-a="addmeal">Zu ' + esc(T.slotLabel(ctx.kind, ctx.inst)) + ' hinzufügen</button><button class="btn ghost" data-a="cancelsel">Abbrechen</button></div></section>';
+      else h += '<section class="card sel" id="selcard"><b>' + esc(sel.n) + '</b><div class="note">' + r0(sel.k) + ' kcal · ' + de(sel.c, 1) + ' C · ' + de(sel.p, 1) + ' P · ' + de(sel.f, 1) + ' F · ' + de(sel.fi || 0, 1) + ' Ballaststoffe je 100 g</div>' +
         '<div class="form" style="margin-top:10px"><label class="f" for="g">Menge in g<input id="g" type="number" inputmode="decimal" min="1" value="' + selG + '"></label>' +
         (S.custom.some(function (x) { return x.id === sel.id; }) ? '<label class="f" for="sel-fi">Ballaststoffe je 100 g' + (sel.fiMiss ? ' (fehlt bei Open Food Facts, bitte ergänzen)' : '') + '<input id="sel-fi" type="number" inputmode="decimal" min="0" step="0.1" value="' + (sel.fi || 0) + '"></label>' : '') +
         '<div class="chips" style="align-self:end"><button class="chip" data-a="portion" data-m="0.5">½ ' + esc(sel.pn) + '</button><button class="chip" data-a="portion" data-m="1">1 ' + esc(sel.pn) + ' (' + sel.pg + ' g)</button><button class="chip" data-a="portion" data-m="2">2×</button></div>' +
@@ -826,7 +875,7 @@
     var rid = 'row-' + x.key.replace('#', '-');
     h += '<article class="card eat' + (open ? ' open' : '') + '" id="' + rid + '"><div class="eat-head"><div class="eat-main"><div class="slot-line">' + (it.length ? '<button type="button" class="exp" data-a="expmeal" data-key="' + esc(x.key) + '" aria-label="' + esc(x.label) + ' als Grafik exportieren" title="Als Grafik exportieren"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="M7.5 7.5 12 3l4.5 4.5"/><path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg></button>' : '') + '<div class="slot-title">' + esc(x.label) + '</div></div><div class="eat-time">' + esc(x.time || '') + (x.plan && x.plan.c > 0 && !it.length ? ' · Ziel ca. ' + r0(x.plan.c) + ' g Carbs' : '') + '</div></div>' +
       (x.pend && !open ? '<button class="x" data-a="nmdrop" data-key="' + esc(x.key) + '" aria-label="Mahlzeit entfernen">×</button>' : '') +
-      '<button class="plus' + (open ? ' on' : '') + '" data-a="openmeal" data-k="' + x.kind + '" data-n="' + x.inst + '" data-tm="' + esc(x.time || '') + '" aria-expanded="' + open + '" aria-label="' + (open ? 'Schließen' : 'Zu ' + esc(x.label) + ' hinzufügen') + '">' + (open ? '–' : '+') + '</button></div>';
+      (x.plan && !x.pend && (SPLIT_KEYS.indexOf(x.kind) >= 0 || x.plan.pid) ? '<button type="button" class="dots" data-a="rowmenu" data-key="' + esc(x.key) + '" aria-haspopup="dialog" aria-label="Weitere Optionen für ' + esc(x.label) + '" title="Weitere Optionen"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>' : '') + '<button class="plus' + (open ? ' on' : '') + '" data-a="openmeal" data-k="' + x.kind + '" data-n="' + x.inst + '" data-tm="' + esc(x.time || '') + '" aria-expanded="' + open + '" aria-label="' + (open ? 'Schließen' : 'Zu ' + esc(x.label) + ' hinzufügen') + '">' + (open ? '–' : '+') + '</button></div>';
     if (it.length) {
       var e = sumMacros(it), kc = 4 * e.c + 4 * e.p + 9 * e.f;
       h += '<div class="eat-sum"><div class="eat-macros"><span class="c">' + r0(e.c) + ' C</span><span class="p">' + r0(e.p) + ' P</span><span class="f">' + r0(e.f) + ' F</span><span class="k">' + r0(kc) + ' kcal</span></div><div class="eat-foods">' + esc(foodsShort(it)) + '</div>' +
@@ -837,7 +886,7 @@
     return h + '</article>';
   }
   function newMealHtml() {
-    if (!nmForm) return '<button class="btn addbig" data-a="nmopen">Mahlzeit hinzufügen</button>';
+    if (!nmForm) return '<button class="btn addbig" data-a="nmopen">Mahlzeit hinzufügen</button><button class="btn ghost addbig planbtn" data-a="pmopen">Mahlzeit planen</button>';
     var chips = KIND_ORDER.map(function (k) { return '<button class="chip' + (nmForm.kind === k ? ' on' : '') + '" data-a="nmkind" data-k="' + k + '" aria-pressed="' + (nmForm.kind === k) + '">' + esc(T.KINDS[k]) + '</button>'; }).join('');
     return '<section class="card nmform"><div class="eyebrow">Mahlzeit hinzufügen</div><div class="chips" role="group" aria-label="Art der Mahlzeit">' + chips + '</div>' +
       '<div class="form"><label class="f" for="nm-time">Uhrzeit<input id="nm-time" type="time" value="' + esc(nmForm.time) + '"></label></div>' +
@@ -932,6 +981,7 @@
     pctNow.c = 100 - pctNow.p - pctNow.f;
     var h = '<div class="top"><div><div class="brand">Profil</div><div class="date">Grundumsatz ca. ' + r0(T.bmr(p)) + ' kcal</div></div></div>' + bannerHtml();
     h += rulesHtml();
+    h += splitsHtml();
     h += designHtml();
     h += '<form class="card form" id="profform" onsubmit="return false">' +
       '<label class="f" for="p-w">Gewicht (kg)<input id="p-w" type="number" inputmode="decimal" min="35" max="200" value="' + p.w + '"></label>' +
@@ -984,6 +1034,7 @@
         '<p class="note">Dein Trainer sieht damit Ernährung, Carb-Ziele und Training, nur lesend, ohne Konto.</p><button class="btn" data-a="newlink" style="margin-top:10px">Link erstellen</button>') + '</section>';
     }
     h += '<button class="btn danger" data-a="reset">Alle Daten auf diesem Handy löschen</button>';
+    h += versionHtml();
     return h;
   }
 
@@ -996,6 +1047,7 @@
     var app = document.getElementById('app');
     app.innerHTML = view === 'heute' ? viewHeute() : view === 'plan' ? viewPlan() : view === 'log' ? viewLog() : view === 'aus' ? viewAus() : viewProfil();
     var items = [['heute', 'Heute'], ['plan', 'Plan'], ['log', 'Essen'], ['aus', 'Auswertung'], ['profil', 'Profil']];
+    if (view === 'profil') fillVersion();
     document.getElementById('tabs').innerHTML = items.map(function (t) { return '<button data-a="tab" data-t="' + t[0] + '"' + (view === t[0] ? ' aria-current="page"' : '') + '>' + t[1] + '</button>'; }).join('');
   }
 
@@ -1364,6 +1416,301 @@
     xOpen(row, trigger);
   }
 
+  /* ---------- Mahlzeit auf mehrere Uhrzeiten aufteilen (v29), Fenster hinter den drei Punkten ---------- */
+  var APP_VERSION = 33;
+  var SPLIT_KEYS = ['frueh', 'mittag', 'abend', 'snack'], SPLIT_MT = { frueh: 'b', mittag: 'l', abend: 'd', snack: 's' };
+  var SPLIT_PRE = { 2: [[50, 50], [60, 40], [70, 30], [30, 70]], 3: [[34, 33, 33], [50, 25, 25], [25, 50, 25], [40, 30, 30]], 4: [[25, 25, 25, 25], [40, 20, 20, 20]] };
+  var mo = null, lastSplit = null;
+  function moAddMin(t, d) { var m = T.tmin(t); if (m === null) return '12:00'; return T.tfmt(Math.min(23 * 60 + 55, m + d)); }
+  function moShares(n) { var o = [], b = Math.floor(100 / n), i; for (i = 0; i < n; i++) o.push(b); o[0] += 100 - b * n; return o; }
+  function moSetN(n) {
+    var first = mo.parts[0] ? mo.parts[0].t : mo.base, sh = moShares(n), old = mo.parts.slice();
+    mo.n = n; mo.parts = [];
+    for (var i = 0; i < n; i++) mo.parts.push({ t: old[i] ? old[i].t : moAddMin(i ? mo.parts[i - 1].t : first, i ? 110 : 0), w: sh[i] });
+  }
+  function moSum() { return mo.parts.reduce(function (a, p) { return a + (Number(p.w) || 0); }, 0); }
+  function moGramParts(g, ws) {
+    var step = g >= 10 ? 1 : 0.5, out = [], used = 0, n = ws.length;
+    ws.forEach(function (w, i) {
+      var v = i === n - 1 ? g - used : Math.round(g * w / 100 / step) * step;
+      v = Math.max(0, Math.round(v * 100) / 100); used += v; out.push(v);
+    });
+    var bad = out.some(function (v) { return v <= 0; });
+    if (bad) { var mx = out.indexOf(Math.max.apply(null, out)); out.forEach(function (v, i) { if (v <= 0) { out[mx] += v; out[i] = 0; } }); }
+    return out;
+  }
+  function moFoodPlan() {
+    var ws = mo.parts.map(function (p) { return Number(p.w) || 0; });
+    return mo.items.map(function (m) { return { m: m, g: moGramParts(m.g || 0, ws) }; });
+  }
+  function moFoodPreview() {
+    var pl = moFoodPlan();
+    return mo.parts.map(function (p, i) {
+      var list = [], c = 0;
+      pl.forEach(function (x) { if (x.g[i] > 0) { list.push(esc(x.m.name) + ' ' + de(x.g[i], x.g[i] % 1 ? 1 : 0) + ' g'); c += (x.m.c || 0) * x.g[i] / (x.m.g || 1); } });
+      return '<div class="mo-pv"><b>' + esc(p.t || '–') + ' · ' + (Number(p.w) || 0) + ' %</b><span>' + (list.join(' · ') || 'nichts') + '</span><span>ca. ' + r0(c) + ' g Carbs</span></div>';
+    }).join('');
+  }
+  function moTargetKeys() {
+    var r = T.analyze(model(), cur, cur)[0], mt = r.match, kind = mo.kind, used = {}, max = 0, keys = [], srcInst = T.slotInst(mo.srcKey);
+    mt.slots.forEach(function (x) { if (x.s.kind === kind) max = Math.max(max, x.inst); });
+    mt.more.forEach(function (g) { if (g.kind === kind) max = Math.max(max, g.inst); });
+    used[srcInst] = 1; keys.push(mo.srcKey);
+    for (var i = 1; i < mo.n; i++) {
+      var tm = T.tmin(mo.parts[i].t), hit = null;
+      mt.slots.forEach(function (x) { if (!hit && x.s.kind === kind && !used[x.inst] && !x.items.length && Math.abs(x.s.at - tm) <= 5) hit = x; });
+      var inst = hit ? hit.inst : ++max; used[inst] = 1; keys.push(kind + '#' + inst);
+    }
+    return keys;
+  }
+  function moApplyFood() {
+    var keys = moTargetKeys(), pl = moFoodPlan(), now = Date.now(), added = [], changed = [];
+    pl.forEach(function (x) {
+      var m = x.m, g0 = m.g || 0, old = Object.assign({}, m), first = true;
+      mo.parts.forEach(function (p, i) {
+        var gi = x.g[i]; if (!(gi > 0)) return;
+        var f = g0 > 0 ? gi / g0 : 1, tgt = first ? m : Object.assign({}, old, { id: uid() });
+        ['kcal', 'c', 'p', 'f', 'fi'].forEach(function (k) { if (old[k]) tgt[k] = old[k] * f; });
+        tgt.g = gi; tgt.t = p.t; tgt.slot = keys[i]; tgt.u = now;
+        if (first) changed.push(old); else { S.meals.push(tgt); added.push(tgt.id); }
+        first = false;
+      });
+    });
+    return { keys: keys, added: added, changed: changed };
+  }
+  function moUndo() {
+    if (!lastSplit) return;
+    var ls = lastSplit; lastSplit = null;
+    S.meals = S.meals.filter(function (m) { return ls.added.indexOf(m.id) < 0; });
+    ls.added.forEach(function (id) { S.del.push({ t: 'meals', id: id }); });
+    ls.changed.forEach(function (o) { var m = S.meals.filter(function (x) { return x.id === o.id; })[0]; if (m) { Object.assign(m, o); m.u = Date.now(); } });
+    save(); render(); flash('Aufteilung rückgängig gemacht.');
+  }
+  function moInit() {
+    if (mo.cur) { mo.n = mo.cur.length; mo.parts = mo.cur.map(function (p) { return { t: p.t, w: p.w }; }); }
+    else { mo.parts = [{ t: mo.base, w: 50 }]; moSetN(2); }
+  }
+  function moCheck() {
+    var sum = moSum(), ts = {}, msg = '';
+    if (mo.n > 1) {
+      mo.parts.forEach(function (p) { if (!/^\d{1,2}:\d{2}$/.test(p.t || '')) msg = 'Bitte bei jedem Teil eine Uhrzeit eintragen.'; ts[p.t] = 1; });
+      if (!msg && Object.keys(ts).length < mo.n) msg = 'Die Uhrzeiten müssen verschieden sein.';
+      if (!msg && mo.parts.some(function (p) { return !(Number(p.w) >= 1); })) msg = 'Jeder Teil braucht mindestens 1 %.';
+      if (!msg && sum !== 100) msg = 'Die Anteile ergeben zusammen ' + sum + ' %. Es müssen 100 % sein.';
+    }
+    return msg;
+  }
+  function moBody() {
+    var h = '';
+    if (mo.step === 'menu') {
+      h += '<button type="button" class="mo-opt" data-m="split"><b>Auf mehrere Uhrzeiten aufteilen</b><span>Zum Beispiel ein Pausenbrot, das du zur Hälfte in der ersten und zur Hälfte in der zweiten Pause isst.</span>' +
+        (mo.cur ? '<em>Aktiv: ' + mo.cur.map(function (p) { return esc(p.t) + ' (' + p.w + ' %)'; }).join(' · ') + '</em>' : '') + '</button>';
+      if (mo.items.length) h += '<button type="button" class="mo-opt" data-m="food"><b>Eingetragenes Essen aufteilen</b><span>Nur für diesen Tag: Die ' + mo.items.length + ' eingetragenen Lebensmittel werden im gewählten Verhältnis auf mehrere Uhrzeiten verteilt, zum Beispiel halb um 9:50 und halb um 11:40 Uhr.</span></button>';
+      if (lastSplit && lastSplit.day === cur) h += '<button type="button" class="mo-opt" data-m="undo"><b>Letzte Aufteilung rückgängig machen</b><span>' + esc(lastSplit.label) + ' wieder zusammenfügen.</span></button>';
+      return h;
+    }
+    var food = mo.mode === 'food';
+    h += '<p class="note" style="margin:0 0 12px">' + (food ? 'Jedes eingetragene Lebensmittel aus ' + esc(mo.label) + ' wird im gewählten Verhältnis auf die Uhrzeiten verteilt. Das gilt nur für diesen Tag.' : esc(mo.label) + ' wird in mehrere Teile geteilt. Das gilt für jeden Tag, bis du es wieder änderst. Standardzeit: ' + esc(mo.base) + '.') + '</p>';
+    h += '<div class="eyebrow" style="margin-bottom:6px">Wie oft essen?</div><div class="seg" role="group" aria-label="Anzahl der Uhrzeiten">' +
+      (food ? [[2, '2×'], [3, '3×'], [4, '4×']] : [[1, 'Nicht aufteilen'], [2, '2×'], [3, '3×'], [4, '4×']]).map(function (x) { return '<button type="button" data-m="n" data-v="' + x[0] + '" aria-pressed="' + (mo.n === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
+    if (mo.n > 1) {
+      h += '<div class="eyebrow" style="margin:14px 0 6px">Anteile</div><div class="chips" role="group" aria-label="Vorschläge für die Anteile">' +
+        SPLIT_PRE[mo.n].map(function (a, i) { return '<button type="button" class="chip" data-m="pre" data-v="' + i + '">' + a.join(' / ') + '</button>'; }).join('') + '</div>';
+      h += '<div class="mo-parts">' + mo.parts.map(function (p, i) {
+        var c = !food && mo.total > 0 ? ' · ca. ' + r0(mo.total * (Number(p.w) || 0) / 100) + ' g Carbs' : '';
+        return '<div class="mo-part"><span class="mo-n">' + (i + 1) + '</span><label class="f" for="mo-t' + i + '">Uhrzeit<input id="mo-t' + i + '" type="time" data-i="' + i + '" data-k="t" value="' + esc(p.t) + '"></label>' +
+          '<label class="f" for="mo-w' + i + '">Anteil (%)<input id="mo-w' + i + '" type="number" inputmode="numeric" min="1" max="99" step="1" data-i="' + i + '" data-k="w" value="' + p.w + '"></label><span class="mo-c" id="mo-c' + i + '">' + (c ? c.slice(3) : '') + '</span></div>';
+      }).join('') + '</div><p class="note" id="mo-sum" style="margin:6px 0 0"></p>' + (food ? '<div class="eyebrow" style="margin:14px 0 6px">So wird es aufgeteilt</div><div class="mo-pvs" id="mo-pv"></div>' : '');
+    } else if (mo.cur) h += '<p class="note" style="margin:12px 0 0">Mit „Speichern“ wird die Aufteilung aufgehoben und es gilt wieder eine Uhrzeit.</p>';
+    if (mo.role && !food) h += '<p class="note" style="margin:12px 0 0">Heute liegt diese Mahlzeit ums Training. Für Mahlzeiten direkt vor oder nach einer Einheit gilt die Aufteilung nicht, sie wirkt an den übrigen Tagen.</p>';
+    h += '<p class="alert" id="mo-err" role="alert" hidden></p>';
+    h += '<div style="display:flex;gap:8px;margin-top:14px"><button type="button" class="btn" id="mo-save" data-m="save">' + (food ? 'Essen aufteilen' : mo.n === 1 ? (mo.cur ? 'Aufteilung aufheben' : 'Speichern') : 'Speichern') + '</button><button type="button" class="btn ghost" data-m="back">Zurück</button></div>';
+    return h;
+  }
+  function moPaint() {
+    var b = document.getElementById('mo-body'); if (!b || !mo) return;
+    b.innerHTML = moBody(); moStatus();
+    var t = document.getElementById('mo-title'); if (t) t.textContent = mo.step === 'menu' ? mo.label + ' · Optionen' : mo.mode === 'food' ? 'Eingetragenes Essen aufteilen' : 'Auf mehrere Uhrzeiten aufteilen';
+  }
+  function moStatus() {
+    if (!mo || mo.step !== 'split') return;
+    var msg = moCheck(), sum = document.getElementById('mo-sum'), sv = document.getElementById('mo-save');
+    if (sum) { sum.textContent = mo.n > 1 ? 'Summe: ' + moSum() + ' %' : ''; sum.style.color = moSum() === 100 ? '' : 'var(--low)'; }
+    var er = document.getElementById('mo-err'); if (er) { er.hidden = !msg; er.textContent = msg; }
+    if (sv) sv.disabled = !!msg;
+    var pv = document.getElementById('mo-pv'); if (pv) pv.innerHTML = msg ? '<p class="note">Erst die Angaben oben korrigieren.</p>' : moFoodPreview();
+    mo.parts.forEach(function (p, i) { var c = document.getElementById('mo-c' + i); if (c) c.textContent = mo.mode !== 'food' && mo.total > 0 && Number(p.w) > 0 ? 'ca. ' + r0(mo.total * Number(p.w) / 100) + ' g Carbs' : ''; });
+  }
+  function moClose() {
+    var o = document.getElementById('mo'); if (o) o.remove();
+    document.removeEventListener('keydown', moKey); document.documentElement.classList.remove('xo-lock');
+    var f = mo && mo.focus; mo = null; if (f && f.focus) { try { f.focus({ preventScroll: true }); } catch (e) {} }
+  }
+  function moKey(e) { if (e.key === 'Escape') moClose(); }
+  function moSave() {
+    var msg = moCheck(); if (msg) { moStatus(); return; }
+    if (mo.mode === 'food') {
+      var res = moApplyFood();
+      lastSplit = { day: cur, label: mo.label, added: res.added, changed: res.changed };
+      var lbl = mo.label, nn = mo.n, tms = mo.parts.map(function (p) { return p.t; }).join(', ');
+      save(); moClose(); render(); flash(lbl + ' ist auf ' + nn + ' Uhrzeiten verteilt (' + tms + ').'); return;
+    }
+    var sp = Object.assign({}, S.profile.splits || {}), txt;
+    if (mo.n === 1) { delete sp[mo.kind]; txt = mo.label + ' hat wieder eine Uhrzeit.'; }
+    else { sp[mo.kind] = mo.parts.map(function (p) { return { t: p.t, w: Number(p.w) }; }); }
+    var nv = T.normSplits(sp).splits;
+    if (nv) S.profile.splits = nv; else delete S.profile.splits;
+    if (mo.n > 1) txt = mo.label + ' ist jetzt auf ' + mo.n + ' Uhrzeiten aufgeteilt: ' + (nv[mo.kind] || []).map(function (p) { return p.t + ' (' + p.w + ' %)'; }).join(', ') + '.';
+    S.profileU = Date.now(); save(); moClose(); render(); flash(txt);
+  }
+  function moOpenKey(key, trigger) {
+    var r = T.analyze(model(), cur, cur)[0], row = mealRows(r).filter(function (x) { return x.key === key; })[0];
+    if (!row || !row.plan || SPLIT_KEYS.indexOf(row.kind) < 0) return;
+    var mt = Object.assign({}, T.DEF_MT, S.profile.mt || {}), existing = (T.normSplits(S.profile.splits).splits || {})[row.kind] || null;
+    var pl = row.plan, total = pl.part ? pl.c * 100 / pl.part.w : pl.c;
+    mo = { items: row.items.slice(), srcKey: key, mode: 'plan', kind: row.kind, label: T.KINDS[row.kind], step: 'menu', base: mt[SPLIT_MT[row.kind]], cur: existing, n: existing ? existing.length : 2, role: !!pl.role, total: total, focus: trigger, parts: [] };
+    if (existing) mo.parts = existing.map(function (p) { return { t: p.t, w: p.w }; });
+    else { mo.parts = [{ t: mo.base, w: 50 }]; moSetN(2); }
+    var el = document.createElement('div'); el.id = 'mo'; el.className = 'mo';
+    el.innerHTML = '<div class="mo-back" data-m="close"></div><div class="mo-card" role="dialog" aria-modal="true" aria-labelledby="mo-title"><div class="mo-head"><b id="mo-title"></b><button type="button" class="x" data-m="close" aria-label="Schließen" id="mo-close">×</button></div><div id="mo-body"></div></div>';
+    document.body.appendChild(el); document.documentElement.classList.add('xo-lock'); document.addEventListener('keydown', moKey);
+    el.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-m]'); if (!b || !mo) return;
+      var a = b.dataset.m, v = b.dataset.v;
+      if (a === 'close') { moClose(); return; }
+      if (a === 'split' || a === 'food') { mo.mode = a === 'food' ? 'food' : 'plan'; mo.step = 'split'; moInit(); moPaint(); return; }
+      if (a === 'undo') { moClose(); moUndo(); return; }
+      if (a === 'back') { mo.step = 'menu'; moPaint(); return; }
+      if (a === 'n') { moSetN(+v); moPaint(); return; }
+      if (a === 'pre') { var pr = SPLIT_PRE[mo.n][+v]; mo.parts.forEach(function (p, i) { p.w = pr[i]; }); moPaint(); return; }
+      if (a === 'save') moSave();
+    });
+    el.addEventListener('input', function (e) {
+      var t = e.target; if (!mo || !t.dataset || t.dataset.i === undefined) return;
+      var p = mo.parts[+t.dataset.i]; if (!p) return;
+      if (t.dataset.k === 'w') p.w = t.value === '' ? 0 : Math.round(Number(t.value)); else p.t = t.value;
+      moStatus();
+    });
+    moPaint();
+    var c = document.getElementById('mo-close'); if (c) c.focus({ preventScroll: true });
+  }
+  function splitsHtml() {
+    var sp = T.normSplits(S.profile.splits).splits; if (!sp) return '';
+    return '<section class="card"><div class="eyebrow" style="margin-bottom:6px">Aufgeteilte Mahlzeiten</div><ul class="rl-act">' + SPLIT_KEYS.filter(function (k) { return sp[k]; }).map(function (k) {
+      return '<li>' + esc(T.KINDS[k]) + ': ' + sp[k].map(function (p) { return esc(p.t) + ' (' + p.w + ' %)'; }).join(' · ') + ' <button type="button" class="btn ghost sm" data-a="splitoff" data-k="' + k + '">Aufheben</button></li>';
+    }).join('') + '</ul><p class="note" style="margin-bottom:0">Einstellen kannst du das in „Essen“ hinter den drei Punkten der Mahlzeit.</p></section>';
+  }
+  function versionHtml() {
+    return '<p class="note ver">Tankplan · Version ' + APP_VERSION + ' <span id="ver-sw"></span></p>';
+  }
+  function fillVersion() {
+    var el = document.getElementById('ver-sw'); if (!el || !window.caches || !caches.keys) return;
+    caches.keys().then(function (ks) {
+      var k = ks.filter(function (x) { return /^tankplan-v/.test(x); }).sort().pop();
+      if (k && document.getElementById('ver-sw')) document.getElementById('ver-sw').textContent = '· installiert: ' + k.replace('tankplan-', '');
+    }).catch(function () {});
+  }
+
+  /* ---------- Mahlzeit planen (v31): feste Makros für eine Mahlzeit, die anderen Mahlzeiten passen sich an ---------- */
+  var pm = null, PM_PRE = [[50, 20, 30], [60, 15, 25], [30, 40, 30], [40, 30, 30]];
+  function pmCalc() {
+    if (pm.mode === 'k') {
+      var k = Number(pm.kcal) || 0;
+      return { c: Math.round(k * (Number(pm.pc) || 0) / 400), p: Math.round(k * (Number(pm.pp) || 0) / 400), f: Math.round(k * (Number(pm.pf) || 0) / 900) };
+    }
+    return { c: Math.round(Number(pm.c) || 0), p: Math.round(Number(pm.p) || 0), f: Math.round(Number(pm.f) || 0) };
+  }
+  function pmCheck() {
+    if (!/^\d{1,2}:\d{2}$/.test(pm.t || '')) return 'Bitte eine Uhrzeit eintragen.';
+    if (pm.mode === 'k') {
+      if (!(Number(pm.kcal) > 0)) return 'Bitte die Kalorien eintragen.';
+      var sum = (Number(pm.pc) || 0) + (Number(pm.pp) || 0) + (Number(pm.pf) || 0);
+      if (sum !== 100) return 'Die Prozente ergeben zusammen ' + sum + ' %. Es müssen 100 % sein.';
+    }
+    var m = pmCalc();
+    if (m.c + m.p + m.f <= 0) return 'Bitte Carbs, Eiweiß oder Fett eintragen.';
+    if (m.c > 600 || m.p > 200 || m.f > 200) return 'Maximal 600 g Carbs, 200 g Eiweiß und 200 g Fett.';
+    return '';
+  }
+  function pmBody() {
+    var h = '', g = pm.mode === 'g';
+    h += '<label class="f" for="pm-n" style="margin-bottom:10px">Name<input id="pm-n" type="text" maxlength="30" data-pk="name" placeholder="z. B. Restaurant, Kuchen, Pizza" value="' + esc(pm.name) + '"></label>';
+    h += '<label class="f" for="pm-t" style="margin-bottom:10px">Uhrzeit<input id="pm-t" type="time" data-pk="t" value="' + esc(pm.t) + '"></label>';
+    h += '<div class="eyebrow" style="margin-bottom:6px">Eingabe</div><div class="seg" role="group" aria-label="Art der Eingabe">' + [['g', 'Gramm'], ['k', 'kcal + %']].map(function (x) { return '<button type="button" data-p="mode" data-v="' + x[0] + '" aria-pressed="' + (pm.mode === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
+    if (g) {
+      h += '<div class="pm-grid"><label class="f" for="pm-c">Carbs (g)<input id="pm-c" type="number" inputmode="numeric" min="0" max="600" data-pk="c" value="' + esc(pm.c) + '"></label>' +
+        '<label class="f" for="pm-p">Eiweiß (g)<input id="pm-p" type="number" inputmode="numeric" min="0" max="200" data-pk="p" value="' + esc(pm.p) + '"></label>' +
+        '<label class="f" for="pm-f">Fett (g)<input id="pm-f" type="number" inputmode="numeric" min="0" max="200" data-pk="f" value="' + esc(pm.f) + '"></label></div>';
+    } else {
+      h += '<label class="f" for="pm-k" style="margin-top:10px">Kalorien (kcal)<input id="pm-k" type="number" inputmode="numeric" min="0" max="3000" step="10" data-pk="kcal" value="' + esc(pm.kcal) + '"></label>' +
+        '<div class="eyebrow" style="margin:12px 0 6px">Verteilung (% der kcal)</div><div class="chips" role="group" aria-label="Vorschläge">' + PM_PRE.map(function (a, i) { return '<button type="button" class="chip" data-p="pre" data-v="' + i + '">' + a.join(' / ') + '</button>'; }).join('') + '</div>' +
+        '<div class="pm-grid"><label class="f" for="pm-pc">Carbs (%)<input id="pm-pc" type="number" inputmode="numeric" min="0" max="100" data-pk="pc" value="' + esc(pm.pc) + '"></label>' +
+        '<label class="f" for="pm-pp">Eiweiß (%)<input id="pm-pp" type="number" inputmode="numeric" min="0" max="100" data-pk="pp" value="' + esc(pm.pp) + '"></label>' +
+        '<label class="f" for="pm-pf">Fett (%)<input id="pm-pf" type="number" inputmode="numeric" min="0" max="100" data-pk="pf" value="' + esc(pm.pf) + '"></label></div><p class="note" style="margin:4px 0 0">Reihenfolge: Carbs / Eiweiß / Fett.</p>';
+    }
+    h += '<p class="pm-res" id="pm-res" aria-live="polite"></p>';
+    h += '<label class="f" for="pm-r" style="margin-top:12px">Ersetzt eine geplante Mahlzeit?<select id="pm-r" data-pk="rep"><option value="">Nein, zusätzliche Mahlzeit</option>' + SPLIT_KEYS.map(function (k) { return '<option value="' + k + '"' + (pm.rep === k ? ' selected' : '') + '>Ja, ' + esc(T.KINDS[k]) + '</option>'; }).join('') + '</select></label>';
+    h += '<p class="alert" id="pm-err" role="alert" hidden></p>';
+    h += '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button type="button" class="btn" id="pm-save" data-p="save">' + (pm.id ? 'Änderungen speichern' : 'Mahlzeit planen') + '</button><button type="button" class="btn ghost" data-p="close">Abbrechen</button>' + (pm.id ? '<button type="button" class="btn danger" data-p="del">Entfernen</button>' : '') + '</div>';
+    return h;
+  }
+  function pmStatus() {
+    if (!pm) return;
+    var msg = pmCheck(), m = pmCalc(), res = document.getElementById('pm-res'), er = document.getElementById('pm-err'), sv = document.getElementById('pm-save'), t = pm.targ;
+    if (res) {
+      var kc = 4 * m.c + 4 * m.p + 9 * m.f, left = '';
+      if (t) {
+        left = ' Tagesziel: ' + r0(t.c) + ' g Carbs, ' + r0(t.p) + ' g Eiweiß, ' + r0(t.f) + ' g Fett. Für die übrigen Mahlzeiten bleiben ca. ' + Math.max(0, r0(t.c - m.c)) + ' g Carbs, ' + Math.max(0, r0(t.p - m.p)) + ' g Eiweiß und ' + Math.max(0, r0(t.f - m.f)) + ' g Fett.';
+        if (m.c > t.c || m.p > t.p || m.f > t.f) left += ' Das ist mehr als dein Tagesziel, die anderen Mahlzeiten fallen dann sehr klein aus.';
+      }
+      res.innerHTML = '<b>' + m.c + ' g Carbs · ' + m.p + ' g Eiweiß · ' + m.f + ' g Fett · ' + r0(kc) + ' kcal</b>' + esc(left);
+    }
+    if (er) { er.hidden = !msg; er.textContent = msg; }
+    if (sv) sv.disabled = !!msg;
+  }
+  function pmPaint() { var b = document.getElementById('pm-body'); if (!b || !pm) return; b.innerHTML = pmBody(); pmStatus(); }
+  function pmClose() {
+    var o = document.getElementById('pm'); if (o) o.remove();
+    document.removeEventListener('keydown', pmKey); document.documentElement.classList.remove('xo-lock');
+    var f = pm && pm.focus; pm = null; if (f && f.focus) { try { f.focus({ preventScroll: true }); } catch (e) {} }
+  }
+  function pmKey(e) { if (e.key === 'Escape') pmClose(); }
+  function pmSave() {
+    var msg = pmCheck(); if (msg) { pmStatus(); return; }
+    var m = pmCalc(), item = { id: pm.id || uid(), name: (pm.name || '').trim() || 'Geplante Mahlzeit', t: pm.t, c: m.c, p: m.p, f: m.f, rep: pm.rep || '' };
+    var all = S.profile.planned || (S.profile.planned = {}), arr = (all[cur] || []).filter(function (x) { return x.id !== item.id; });
+    if (arr.length >= 6) { pmStatus(); flash('Pro Tag sind höchstens 6 geplante Mahlzeiten möglich.'); return; }
+    arr.push(item); all[cur] = arr;
+    var old = T.addDays(T.today(), -45); Object.keys(all).forEach(function (d) { if (d < old) delete all[d]; });
+    S.profileU = Date.now(); var nm = item.name; save(); pmClose(); render(); flash('„' + nm + '“ ist für ' + item.t + ' Uhr geplant. Die anderen Mahlzeiten haben sich angepasst.');
+  }
+  function pmOpen(id, trigger) {
+    var r = T.analyze(model(), cur, cur)[0], ex = id ? ((S.profile.planned || {})[cur] || []).filter(function (x) { return x.id === id; })[0] : null;
+    if (id && !ex) return;
+    pm = { id: ex ? ex.id : '', name: ex ? ex.name : '', t: ex ? ex.t : (cur === T.today() ? nowHM() : '12:00'), mode: 'g', c: ex ? ex.c : '', p: ex ? ex.p : '', f: ex ? ex.f : '', kcal: '', pc: 50, pp: 20, pf: 30, rep: ex ? ex.rep : '', targ: r.t, focus: trigger };
+    var el = document.createElement('div'); el.id = 'pm'; el.className = 'mo';
+    el.innerHTML = '<div class="mo-back" data-p="close"></div><div class="mo-card" role="dialog" aria-modal="true" aria-labelledby="pm-title"><div class="mo-head"><b id="pm-title">' + (ex ? 'Geplante Mahlzeit' : 'Mahlzeit planen') + '</b><button type="button" class="x" data-p="close" aria-label="Schließen" id="pm-close">×</button></div>' +
+      '<p class="note" style="margin:0 0 12px">Plane eine Mahlzeit mit festen Makros für diesen Tag (' + esc(T.dayLabel ? T.dayLabel(cur) : cur) + '). Tankplan zieht sie vom Tagesziel ab und rechnet die anderen Mahlzeiten neu.</p><div id="pm-body"></div></div>';
+    document.body.appendChild(el); document.documentElement.classList.add('xo-lock'); document.addEventListener('keydown', pmKey);
+    el.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-p]'); if (!b || !pm) return;
+      var a = b.dataset.p, v = b.dataset.v;
+      if (a === 'close') { pmClose(); return; }
+      if (a === 'mode') { if (pm.mode !== v) { var cc = pmCalc(); if (v === 'k') { pm.kcal = r0(4 * cc.c + 4 * cc.p + 9 * cc.f) || ''; var kk = 4 * cc.c + 4 * cc.p + 9 * cc.f; if (kk > 0) { pm.pc = Math.round(100 * 4 * cc.c / kk); pm.pp = Math.round(100 * 4 * cc.p / kk); pm.pf = 100 - pm.pc - pm.pp; } } else { pm.c = cc.c || ''; pm.p = cc.p || ''; pm.f = cc.f || ''; } pm.mode = v; pmPaint(); } return; }
+      if (a === 'pre') { var pr = PM_PRE[+v]; pm.pc = pr[0]; pm.pp = pr[1]; pm.pf = pr[2]; pmPaint(); return; }
+      if (a === 'del') { var all = S.profile.planned || {}, arr = (all[cur] || []).filter(function (x) { return x.id !== pm.id; }); if (arr.length) all[cur] = arr; else delete all[cur]; if (!Object.keys(all).length) delete S.profile.planned; S.profileU = Date.now(); save(); pmClose(); render(); flash('Geplante Mahlzeit entfernt.'); return; }
+      if (a === 'save') pmSave();
+    });
+    el.addEventListener('input', function (e) { var k = e.target.dataset && e.target.dataset.pk; if (!pm || !k) return; pm[k] = e.target.value; pmStatus(); });
+    el.addEventListener('change', function (e) { var k = e.target.dataset && e.target.dataset.pk; if (!pm || !k) return; pm[k] = e.target.value; pmStatus(); });
+    pmPaint();
+    var c = document.getElementById('pm-close'); if (c) c.focus({ preventScroll: true });
+  }
+  function rowMenu(key, trigger) {
+    var r = T.analyze(model(), cur, cur)[0], row = mealRows(r).filter(function (x) { return x.key === key; })[0];
+    if (row && row.plan && row.plan.pid) pmOpen(row.plan.pid, trigger); else moOpenKey(key, trigger);
+  }
+
   /* ---------- Ereignisse ---------- */
   function fail(e) { flash(e && e.message ? e.message : String(e)); }
   document.addEventListener('click', function (e) {
@@ -1387,6 +1734,10 @@
       delete S.profile.rules; S.profileU = Date.now(); save(); render(); flash('Regeln zurückgesetzt.'); return;
     }
     if (a === 'design') { design = d.v; try { localStorage.setItem('tankplan.design', design); } catch (er) {} applyDesign(); render(); return; }
+    if (a === 'planmode') { planMode = d.v === 'text' ? 'text' : 'fields'; try { localStorage.setItem(PMODE_KEY, planMode); } catch (e) {} render(); return; }
+    if (a === 'rowmenu') { rowMenu(d.key, b); return; }
+    if (a === 'pmopen') { pmOpen('', b); return; }
+    if (a === 'splitoff') { var sp0 = Object.assign({}, S.profile.splits || {}); delete sp0[d.k]; if (T.normSplits(sp0).splits) S.profile.splits = T.normSplits(sp0).splits; else delete S.profile.splits; S.profileU = Date.now(); save(); render(); flash(T.KINDS[d.k] + ' hat wieder eine Uhrzeit.'); return; }
     if (a === 'expmeal') { xOpenKey(d.key, b); return; }
     if (a === 'tab') { view = d.t; render(); window.scrollTo(0, 0); return; }
     if (a === 'day') { cur = d.d === '0' ? T.today() : T.addDays(cur, +d.d); openKey = ''; nmForm = null; pending = []; sel = null; q = ''; render(); return; }
@@ -1484,6 +1835,11 @@
       pickCtx(nk, ni, ntm); ctx.time = ntm; ctx.times = ctx.times || {}; ctx.times[nkey] = ntm;
       openKey = nkey; nmForm = null; sel = null; q = ''; render(); focusRow(); return;
     }
+    if (a === 'dish') {
+      dishOpen = true; sel = window.IMBISS.build(d.id, {}); if (sel) selG = sel.pg; selCook = false; render();
+      var dc = document.getElementById('selcard'); if (dc) dc.scrollIntoView({ block: 'center' });
+      return;
+    }
     if (a === 'pick') {
       sel = allFoods().filter(function (f) { return f.n === d.n; })[0] || null;
       if (sel) selG = sel.pg;
@@ -1580,6 +1936,7 @@
     else if (id === 'sel-fi') { var cf = S.custom.filter(function (x) { return sel && x.id === sel.id; })[0]; if (cf) { cf.fi = Math.max(0, +e.target.value || 0); cf.u = Date.now(); persist(); var sp2 = document.getElementById('selprev'); if (sp2) sp2.textContent = selPreview(); } }
     else if (id === 'plantitle') { planTitle = e.target.value; var pp = document.getElementById('planprev'); if (pp) pp.innerHTML = planPreview(); }
     else if (id === 'plandesc') { planDesc = e.target.value; document.getElementById('planprev').innerHTML = planPreview(); }
+    else if (/^pf-(min|w|tss|kj|type|lv)$/.test(id)) { planF[id.slice(3)] = e.target.value; var pp3 = document.getElementById('planprev'); if (pp3) pp3.innerHTML = planPreview(); }
     else if (id === 'plantext') { planText = e.target.value; document.getElementById('planprev').innerHTML = planPreview(); }
     else if (id === 'plandate') { planDay = e.target.value || planDay; document.getElementById('planprev').innerHTML = planPreview(); }
     else if (id === 'wkg') { wInput = e.target.value; }
@@ -1589,6 +1946,12 @@
   var MT_IDS = { 'p-mb': 'b', 'p-ml': 'l', 'p-md': 'd', 'p-ms': 's', 'p-mnf': 'nf', 'p-mnt': 'nt', 'p-mnw': 'nw' };
   document.addEventListener('change', function (e) {
     var el = e.target, id = el.id, v = el.value, P = S.profile;
+    if (el.classList && el.classList.contains('dsel') && sel && sel.dish) {
+      var no = {}; Object.keys(sel.dish.o).forEach(function (k) { no[k] = sel.dish.o[k]; }); no[el.dataset.o] = v;
+      sel = window.IMBISS.build(sel.dish.id, no); selG = sel.pg; render();
+      var dc2 = document.getElementById('do-' + el.dataset.o); if (dc2) dc2.focus();
+      return;
+    }
     if (id === 'wdate') { if (v && v <= T.today()) { wDay = v; wInput = null; } render(); return; }
     if (id === 'done-tm') { if (doneEdit) doneEdit.tm = v; return; }
     if (id === 'done-min') { if (doneEdit) doneEdit.min = Number(v); return; }
@@ -1677,10 +2040,11 @@
     if (id === 'planform') {
       var n = 0, title = planTitle.trim(), lib = libFind(title), dtext = effDesc(), dp = dtext ? T.parseWorkoutText(dtext, S.profile) : null;
       if (dtext && !dp) { flash('In der Beschreibung keine Abschnitte mit Watt-Angabe erkannt.'); return; }
-      if (title && !dtext && !planText.trim()) { flash('Zu diesem Titel gibt es noch keine Vorlage. Füge die TP-Beschreibung ein.'); return; }
+      if (planMode === 'fields' && !dp && !(Number(planF.min) > 0)) { flash('Bitte die Dauer in Minuten eintragen.'); return; }
+      if (title && !dtext && (planMode === 'fields' ? !(Number(planF.min) > 0) : !planText.trim())) { flash('Zu diesem Titel gibt es noch keine Vorlage. Füge die TP-Beschreibung ein.'); return; }
       var doneN = 0, tdy2 = T.today();
-      planText.split('\n').forEach(function (l) {
-        var x = T.parseLine(l, planDay); if (!x || x.rest) return;
+      planInputs().forEach(function (inp) {
+        var x = inp.x, l = inp.l; if (!x || x.rest) return;
         if (planDone && x.day > tdy2 && /\b(mo|di|mi|do|fr|sa|so|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/i.test(l) && !/morgen/i.test(l)) x.day = T.addDays(x.day, -7);
         if (planDone && x.day > tdy2) { flash('Absolviert geht nur für heute oder früher. Nimm „gestern“, einen Wochentag oder ein Datum in der Vergangenheit.'); n = -999; return; }
         var it = { id: uid(), day: x.day, title: title || x.title, type: x.type, min: x.min, lv: x.lv, tss: x.tss || null, kj: x.kj || null, tm: x.tm || planTime || null, u: Date.now() };
@@ -1693,7 +2057,7 @@
         if (planDone) { if (planDay > tdy2) { flash('Absolviert geht nur für heute oder früher.'); return; } S.acts.push(actFromItem(dpItem, dpItem.tm, dpItem.min)); doneN++; } else S.plan.push(dpItem); n++; }
       if (title && dp && n) { var saved = libSave(title, dtext, 'Rad', planUpd); if (saved && !lib) flash(n + ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt, Vorlage „' + title + '“ gespeichert.'); }
       planTitle = ''; planUpd = false;
-      planText = ''; planDesc = ''; save(); flash(n ? n + (planDone ? ' Einheit' + (n === 1 ? '' : 'en') + ' als absolviert eingetragen.' : ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt.') : 'Keine Workouts erkannt.');
+      planText = ''; planDesc = ''; planF.min = ''; planF.w = ''; planF.tss = ''; planF.kj = ''; save(); flash(n ? n + (planDone ? ' Einheit' + (n === 1 ? '' : 'en') + ' als absolviert eingetragen.' : ' Workout' + (n === 1 ? '' : 's') + ' hinzugefügt.') : 'Keine Workouts erkannt.');
     } else if (id === 'customform') {
       var f = { id: uid(), n: document.getElementById('c-n').value.trim(), k: +document.getElementById('c-k').value || 0, c: +document.getElementById('c-c').value || 0,
         p: +document.getElementById('c-p').value || 0, f: +document.getElementById('c-f').value || 0, fi: +document.getElementById('c-fi').value || 0, gr: document.getElementById('c-g').value, co: '', v: '', pn: 'Portion', pg: 100, u: Date.now() };
@@ -1714,6 +2078,7 @@
     schedSync();
   }
 
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {}); } catch (e) {}
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
   render();
   maybeAuto();
